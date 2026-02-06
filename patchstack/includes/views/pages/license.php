@@ -60,7 +60,7 @@ if (!empty($secretToken) && !$this->is_connected() ){
 </div>
 
 <p class="patchstack-upsell" style="<?php echo $status ? 'display: none;' : ''; ?>">
-	<a href="https://app.patchstack.com/login" target="_blank"><?php esc_html_e( 'Log in to dashboard', 'patchstack' ); ?></a>
+	<a href="https://app.patchstack.com/login?free=1" target="_blank"><?php esc_html_e( 'Log in to dashboard', 'patchstack' ); ?></a>
 </p>
 
 <div class="patchstack-free" style="<?php echo !$status ? 'display: none;' : ''; ?>">
@@ -175,7 +175,7 @@ if (!empty($secretToken) && !$this->is_connected() ){
 			<?php
 				} else {
 			?>
-			<div class="form-table patchstack-form-table" <?php echo $managed ? 'style="margin-top: 32px;"' : ''; ?>>
+			<div class="form-table patchstack-form-table">
 				<label for="patchstack_api_key">
 					<?php esc_html_e('API key', 'patchstack'); ?>
 				</label>

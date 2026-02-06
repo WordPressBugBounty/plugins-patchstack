@@ -234,11 +234,12 @@ class P_Api extends P_Core {
 	/**
 	 * Retrieve the status of a license.
 	 *
+	 * @param boolean $fetchPolicy Whether or not to fetch the policy settings.
 	 * @return void|array
 	 */
-	public function update_license_status() {
+	public function update_license_status($fetchPolicy = false) {
 		// Get current license status.
-		$response = $this->send_request( '/api/license/verify', 'GET' );
+		$response = $this->send_request( '/api/license/verify' . ($fetchPolicy ? '?fetchPolicy=true' : ''), 'GET' );
 
 		// Invalid license, or no longer active.
 		if ( ! is_array( $response ) && $response == 422 ) {
@@ -250,10 +251,12 @@ class P_Api extends P_Core {
 		}
 
 		// Update the representing options.
+		// Expiry date.
 		if ( isset( $response['expires_at'] ) ) {
 			$this->update_blog_option( $this->blog_id, 'patchstack_license_expiry', $response['expires_at'] );
 		}
 
+		// Free vs Paid license.
 		if ( isset( $response['free'] ) ) {
 			$this->update_blog_option( $this->blog_id, 'patchstack_license_free', $response['free'] == false ? 0 : 1 );
 
@@ -265,22 +268,39 @@ class P_Api extends P_Core {
 			}
 		}
 
+		// Active subscription.
 		if ( isset( $response['active'] ) ) {
 			$this->update_blog_option( $this->blog_id, 'patchstack_license_activated', $response['active'] == true );
 		}
 
+		// Subscription class.
 		if ( isset( $response['class'] ) ) {
 			$this->update_blog_option( $this->blog_id, 'patchstack_subscription_class', $response['class'] );
 			$this->update_blog_option( $this->blog_id, 'patchstack_last_license_check', time() );
 		}
 
+		// Managed site status.
 		if ( isset( $response['managed'], $response['managed_string'] ) ) {
 			$this->update_blog_option( $this->blog_id, 'patchstack_managed', $response['managed'] );
 			$this->update_blog_option( $this->blog_id, 'patchstack_managed_text', $response['managed_string'] );
 		}
 
+		// Site ID.
 		if ( isset( $response['site_id'] ) ) {
 			$this->update_blog_option( $this->blog_id, 'patchstack_site_id', $response['site_id'] );
+		}
+
+		// Policy settings.
+		if ( isset( $response['policy'] ) && is_array( $response['policy'] ) && count( $response['policy'] ) > 0 ) {
+			foreach ( $response['policy'] as $key => $value ) {
+				// Make sure the option exists.
+				if ( ! array_key_exists( $key, $this->plugin->admin_options->options ) ) {
+					continue;
+				}
+
+				// Update the option.
+				$this->update_blog_option( $this->blog_id, $key, $value );
+			}
 		}
 
 		return $response;
@@ -341,15 +361,6 @@ class P_Api extends P_Core {
 	 */
 	public function post_firewall_rule( $settings ) {
 		return $this->send_request( '/api/rules', 'POST', $settings );
-	}
-
-	/**
-	 * Get the .htaccess firewall rules.
-	 *
-	 * @return array The .htaccess rules.
-	 */
-	public function post_firewall_htaccess_rule() {
-		return $this->send_request( '/api/rules/htaccess', 'POST' );
 	}
 
 	/**

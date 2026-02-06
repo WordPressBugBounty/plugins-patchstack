@@ -40,7 +40,6 @@ class P_Login extends P_Core {
 			add_action( 'woocommerce_login_form_start', [ $this, 'add_captcha' ] );
 			add_action( 'woocommerce_register_form_start', [ $this, 'add_captcha' ] );
 			add_action( 'wp_authenticate', [ $this, 'add_captcha' ] );
-			add_filter( 'woocommerce_process_registration_errors', [$this, 'general_captcha_check' ], 10, 1 );
 			add_action( 'woocommerce_before_lost_password_form', [ $this, 'add_captcha' ] );
 		}
 
@@ -330,6 +329,7 @@ class P_Login extends P_Core {
 			add_action( 'register_form', [ $this->plugin->hardening, 'captcha_display' ] );
 			add_action( 'woocommerce_register_form', [ $this->plugin->hardening, 'captcha_display' ] );
 			add_action( 'registration_errors', [ $this, 'general_captcha_check' ] );
+			add_filter( 'woocommerce_process_registration_errors', [$this, 'general_captcha_check' ], 10, 1 );
 		}
 
 		// reCAPTCHA on the reset password form.

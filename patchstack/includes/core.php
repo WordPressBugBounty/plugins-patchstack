@@ -154,7 +154,7 @@ class P_Core {
 			return update_blog_option( $site_id, $name, $value );
 		}
 
-		return update_option( $name, $value, true );
+		return update_option( $name, $value );
 	}
 
 	/**

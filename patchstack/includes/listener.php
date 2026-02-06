@@ -512,7 +512,7 @@ class P_Listener extends P_Core {
 					$value = map_deep( $value, 'wp_filter_nohtml_kses' );
 				}
 				
-				update_option( $key, $value, true );
+				update_option( $key, $value );
 			}
 		}
 
