@@ -18,6 +18,11 @@ class P_Admin_Menu extends P_Core {
 	 */
 	public function __construct( $core ) {
 		parent::__construct( $core );
+
+		if ( defined( 'PS_DISABLE_MENU' ) && PS_DISABLE_MENU ) {
+			return;
+		}
+
 		add_action( 'admin_head', [ $this, 'add_meta_nonce' ] );
 		add_action( 'admin_menu', [ $this, 'add_menu_pages' ] );
 		add_action( 'network_admin_menu', [ $this, 'network_menu' ] );

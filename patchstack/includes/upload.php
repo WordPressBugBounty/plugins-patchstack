@@ -365,6 +365,7 @@ class P_Upload extends P_Core {
 			];
 		}
 
+		$software_list = apply_filters( 'patchstack_get_software_data', $software_list );
 		return $software_list;
 	}
 

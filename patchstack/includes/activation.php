@@ -395,7 +395,11 @@ class P_Activation extends P_Core {
 		// Deactivate the license.
 		if ( $action == 'deactivate' ) {
 			update_option( 'patchstack_api_token', '' );
-			update_option( 'patchstack_license_activated', '0', true );
+			update_option( 'patchstack_license_activated', '0' );
+			update_option( 'patchstack_clientid', '' );
+			update_option( 'patchstack_secretkey', '' );
+			update_option( 'patchstack_secretkey_nonce', '' );
+
 			$this->auto_prepend_removal();
 	
 			return [

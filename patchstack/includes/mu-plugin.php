@@ -18,10 +18,14 @@ if ( get_option( 'patchstack_license_activated', 0 ) == 0 || get_option( 'patchs
 // Load essential WP core file.
 require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
-// Determine if the Patchstack plugin folder exists.
-$pluginDir = WP_PLUGIN_DIR . '/patchstack';
-if ( ! is_dir( $pluginDir ) || ! is_plugin_active( 'patchstack/patchstack.php' ) ) {
-    return;
+// Determine if the Patchstack mu-plugin folder exists first, then fallback to checking normal plugin.
+$pluginDir = WPMU_PLUGIN_DIR . '/patchstack';
+if ( ! is_file( $pluginDir . '/patchstack.php' ) ) {
+	// Determine if the Patchstack plugin folder exists.
+	$pluginDir = WP_PLUGIN_DIR . '/patchstack';
+	if ( ! is_dir( $pluginDir ) || ! is_plugin_active( 'patchstack/patchstack.php' ) ) {
+		return;
+	}
 }
 
 // Determine if the core file exists.

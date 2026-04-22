@@ -4,7 +4,7 @@
  * Plugin URI:  https://patchstack.com/?utm_medium=wp&utm_source=dashboard&utm_campaign=patchstack%20plugin
  * Author URI: https://patchstack.com/?utm_medium=wp&utm_source=dashboard&utm_campaign=patchstack%20plugin
  * Description: Patchstack identifies security vulnerabilities in WordPress plugins, themes, and core.
- * Version: 2.3.5
+ * Version: 2.3.6
  * Author: Patchstack
  * License: GPLv3
  * Text Domain: patchstack
@@ -59,7 +59,7 @@ if ( ! class_exists( 'patchstack' ) ) {
 		 *
 		 * @var string
 		 */
-		const VERSION = '2.3.5';
+		const VERSION = '2.3.6';
 
 		/**
 		 * API URL of Patchstack to communicate with.
@@ -174,6 +174,8 @@ if ( ! class_exists( 'patchstack' ) ) {
 			// Define WP_CLI command.
 			if ( defined( 'WP_CLI' ) && WP_CLI && method_exists('\WP_CLI', 'add_command')) {
 				\WP_CLI::add_command( 'patchstack activate', [ $this, 'cli_activate' ] );
+				\WP_CLI::add_command( 'patchstack deactivate', [ $this, 'cli_deactivate' ] );
+				\WP_CLI::add_command( 'patchstack status', [ $this, 'cli_status' ] );
 			}
 		}
 
@@ -230,20 +232,20 @@ if ( ! class_exists( 'patchstack' ) ) {
 		 *
 		 * [<id>]
 		 * : The API client id.
-		 * 
+		 *
 		 * [<secret>]
 		 * : The API secret key.
-		 * 
+		 *
 		 * <secret-id>
 		 * : The API client id and secret key merged together, found in the App. E.g. 2b072e8b60402e30d481df351fc08183906254e0-123456
-		 * 
+		 *
 		 * ## EXAMPLES
-		 * 
+		 *
 		 *     $ wp patchstack activate 123456 2b072e8b60402e30d481df351fc08183906254e0
 		 *     Success: The Patchstack plugin has been successfully connected.
-		 * 
+		 *
 		 * 	   or
-		 * 
+		 *
 		 *     $ wp patchstack activate 2b072e8b60402e30d481df351fc08183906254e0-123456
 		 *     Success: The Patchstack plugin has been successfully connected.
 		 */
@@ -266,6 +268,40 @@ if ( ! class_exists( 'patchstack' ) ) {
 		}
 
 		/**
+		 * Disconnects the Patchstack plugin from the API and removes the API key.
+		 *
+		 * ## EXAMPLES
+		 *
+		 *     $ wp patchstack deactivate
+		 *     Success: The Patchstack plugin has been successfully disconnected.
+		 */
+		public function cli_deactivate() {
+			$this->activation->deactivate();
+			$this->activation->alter_license( '', '', 'deactivate' );
+
+			\WP_CLI::success( 'The Patchstack plugin has been successfully disconnected.' );
+		}
+
+		/**
+		 * Gets the current API connection status from the Patchstack plugin.
+		 *
+		 * ## EXAMPLES
+		 *
+		 *     $ wp patchstack status
+		 *     Success: The Patchstack plugin is currently connected to the API.
+		 *
+		 *     $ wp patchstack status
+		 *     Warning: The Patchstack plugin is not connected to the API.
+		 */
+		public function cli_status() {
+			if ( $this->api->is_connected() ) {
+				\WP_CLI::success( __( 'The Patchstack plugin is currently connected to the API.', 'patchstack' ) );
+			} else {
+				\WP_CLI::warning( __( 'The Patchstack plugin is not connected to the API.', 'patchstack' ) );
+			}
+		}
+
+		/**
 		 * Deactivate the plugin.
 		 *
 		 * @return void
@@ -277,7 +313,7 @@ if ( ! class_exists( 'patchstack' ) ) {
 
 		/**
 		 * Load translated strings for the plugin.
-		 * 
+		 *
 		 * @return void
 		 */
 		public function load_textdomain () {
@@ -402,10 +438,12 @@ if ( ! function_exists( 'patchstack' ) ) {
 	}
 }
 
-// Kick it off.
-add_action( 'plugins_loaded', [ patchstack(), 'init' ] );
+if ( ! has_action( 'plugins_loaded', [ patchstack(), 'init' ] ) ) {
+	// Kick it off.
+	add_action( 'plugins_loaded', [ patchstack(), 'init' ] );
 
-// Activation and deactivation hooks.
-register_activation_hook( __FILE__, [ patchstack(), 'activate' ] );
-register_deactivation_hook( __FILE__, [ patchstack(), 'deactivate' ] );
-register_uninstall_hook( __FILE__, 'patchstack_uninstall' );
+	// Activation and deactivation hooks.
+	register_activation_hook( __FILE__, [ patchstack(), 'activate' ] );
+	register_deactivation_hook( __FILE__, [ patchstack(), 'deactivate' ] );
+	register_uninstall_hook( __FILE__, 'patchstack_uninstall' );
+}

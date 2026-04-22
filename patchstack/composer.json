@@ -1,0 +1,16 @@
+{
+    "name": "patchstack/patchstack",
+    "description": "Patchstack automatically identifies and mitigates security vulnerabilities in WordPress plugins, themes, and core.",
+    "type": "wordpress-plugin",
+    "license": "GPL-3.0-or-later",
+    "require": {
+        "php": ">=5.6",
+        "composer/installers": "^1.0 || ^2.0"
+    },
+    "authors": [
+        {
+            "name": "Patchstack",
+            "email": "support@patchstack.com"
+        }
+    ]
+}
