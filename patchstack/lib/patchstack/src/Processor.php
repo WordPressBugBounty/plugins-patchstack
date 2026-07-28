@@ -195,7 +195,8 @@ class Processor
                 $this->extension->logRequest($rule['id'], $postData, 'REDIRECT');
                 $this->response->redirect($rule['type_params'], $mustExit);
             } elseif ($rule['type'] == 'WHITELIST') {
-                return $mustExit;
+                // A matched whitelist rule means the request is allowed through.
+                return true;
             }
         }
 
@@ -582,6 +583,11 @@ class Processor
         // Iterate through all root objects.
         foreach ($this->firewallRulesLegacy as $firewall_rule) {
             $rule_terms = json_decode($firewall_rule['rule']);
+
+            // Skip malformed rules; reading properties off null warns on PHP 8.
+            if (!is_object($rule_terms)) {
+                continue;
+            }
 
             // Determine if we should match the IP address.
             $ip = isset($rule_terms->rules->ip_address) ? $rule_terms->rules->ip_address : null;

@@ -42,9 +42,11 @@ class P_Rules extends P_Core {
 		$settings = json_encode( $rules );
 		$results  = $this->plugin->api->post_firewall_rule( [ 'settings' => $settings ] );
 
-		// If no rules returned, we assume all settings are turned off.
-		if ( empty( $results ) ) {
-			$results['rules'] = '';
+		// If no rules returned (empty, or a status code/null from a failed request),
+		// we assume all settings are turned off. Guard against assigning to a string
+		// offset, which is a fatal error on PHP 7.1+.
+		if ( ! is_array( $results ) ) {
+			$results = [ 'rules' => '' ];
 		}
 
 		// We have rules so apply it to the .htaccess file.
@@ -113,24 +115,30 @@ class P_Rules extends P_Core {
 		update_option( 'patchstack_vpatches_present', $vPatchCount );
 		update_option( 'patchstack_non_vpatches_present', $ruleCount );
 
-		// Separate the new firewall engine rules from the old ones.
-		$newRules = [];
-		$oldRules = [];
-		foreach ( $results['whitelists'] as $rule ) {
-			if ( isset( $rule['rule_v2'] ) ) {
-				$rule['rules'] = $rule['rule_v2'];
-				unset( $rule['rule_v2'] );
-				$newRules[] = $rule;
-			} else {
-				$oldRules[] = $rule;
+		// Separate the new firewall engine rules from the old ones. Only touch the
+		// stored whitelists when the API actually returned them, otherwise a partial
+		// response would wipe the existing whitelist rules.
+		if ( isset( $results['whitelists'] ) && is_array( $results['whitelists'] ) ) {
+			$newRules = [];
+			$oldRules = [];
+			foreach ( $results['whitelists'] as $rule ) {
+				if ( isset( $rule['rule_v2'] ) ) {
+					$rule['rules'] = $rule['rule_v2'];
+					unset( $rule['rule_v2'] );
+					$newRules[] = $rule;
+				} else {
+					$oldRules[] = $rule;
+				}
 			}
+
+			// Update whitelist rules.
+			update_option( 'patchstack_whitelist_rules', json_encode( $oldRules ), true );
+			update_option( 'patchstack_whitelist_rules_v3', json_encode( $newRules ), true );
 		}
 
-		// Update whitelist rules.
-		update_option( 'patchstack_whitelist_rules', json_encode( $oldRules ), true );
-		update_option( 'patchstack_whitelist_rules_v3', json_encode( $newRules ), true );
-
 		// Update the whitelisted keys.
-		update_option( 'patchstack_whitelist_keys_rules', json_encode( $results['whitelist_keys'] ), true );
+		if ( isset( $results['whitelist_keys'] ) ) {
+			update_option( 'patchstack_whitelist_keys_rules', json_encode( $results['whitelist_keys'] ), true );
+		}
 	}
 }

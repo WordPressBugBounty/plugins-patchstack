@@ -121,7 +121,7 @@ class P_Htaccess extends P_Core {
 
 		// Get the current rules.
 		$current = $old = $fs->get_contents( ABSPATH . '.htaccess' );
-		$current = $this->delete_all_between( '# Patchstack Firewall Start', "# Patchstack Firewall End\r\n", $current );
+		$current = $this->delete_all_between( '# Patchstack Firewall Start', '# Patchstack Firewall End', $current );
 
 		// If no rules, then we delete the old ones.
 		if ( $rules != '' ) {
@@ -346,7 +346,15 @@ class P_Htaccess extends P_Core {
 			return $string;
 		}
 
-		$delete = substr( $string, $begin_pos, ( $end_pos + strlen( $end ) ) - $begin_pos );
+		$end_pos += strlen( $end );
+
+		// Consume any trailing newline characters so the block is removed cleanly
+		// regardless of CRLF/LF line endings and repeated writes don't stack blank lines.
+		while ( isset( $string[ $end_pos ] ) && ( $string[ $end_pos ] === "\r" || $string[ $end_pos ] === "\n" ) ) {
+			$end_pos++;
+		}
+
+		$delete = substr( $string, $begin_pos, $end_pos - $begin_pos );
 		return str_replace( $delete, '', $string );
 	}
 }

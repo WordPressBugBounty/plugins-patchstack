@@ -117,6 +117,12 @@ class P_Core {
 		// Get the setting of the current site.
 		$secondary = get_option( $name, $default );
 
+		// On single-site installs there is no network option to reconcile, so
+		// avoid the extra get_site_option() lookup on every read.
+		if ( ! is_multisite() ) {
+			return $secondary;
+		}
+
 		// Get the setting of the network and in case there's a difference,
 		// return the value of site.
 		$main = get_site_option( $name, $default );
@@ -168,7 +174,7 @@ class P_Core {
 		}
 
 		$expiry = get_option( 'patchstack_license_expiry', '' );
-		if ( $expiry != '' && ( strtotime( $expiry ) < ( time() + ( 3600 * 24 ) ) ) ) {
+		if ( $expiry != '' && ( strtotime( $expiry ) > ( time() - ( 3600 * 24 ) ) ) ) {
 			return true;
 		}
 
@@ -182,7 +188,7 @@ class P_Core {
 	 */
 	public function is_connected() {
 		// Determine if the API client id is set.
-		if ( $this->plugin->client_id == 'PATCHSTACK_CLIENT_ID' && get_option( 'patchstack_clientid', false ) === false ) {
+		if ( $this->plugin->client_id == 'PATCHSTACK_CLIENT_ID' && ! get_option( 'patchstack_clientid' ) ) {
 			return false;
 		}
 
@@ -206,7 +212,58 @@ class P_Core {
 	 * @return boolean
 	 */
 	public function is_protected() {
-		return get_option( 'patchstack_license_free', false) == 0;
+		return (int) get_option( 'patchstack_license_free', 0 ) == 0;
+	}
+
+	/**
+	 * Format a UNIX timestamp as a short relative-time string for the connection card.
+	 * Returns "Never" for empty/zero, otherwise "Just now" / "Xm ago" / "Xh ago" / "Xd ago".
+	 *
+	 * The returned string is the raw translated value — escape it at the call site.
+	 *
+	 * @param int $timestamp UNIX timestamp.
+	 * @return string Translated relative-time label (not escaped).
+	 */
+	public function format_relative_time( $timestamp ) {
+		$timestamp = (int) $timestamp;
+		if ( $timestamp <= 0 ) {
+			return __( 'Never', 'patchstack' );
+		}
+
+		$diff = time() - $timestamp;
+		if ( $diff < 60 ) {
+			return __( 'Just now', 'patchstack' );
+		}
+		if ( $diff < 3600 ) {
+			/* translators: %d: number of minutes since the last sync. */
+			return sprintf( __( '%dm ago', 'patchstack' ), (int) floor( $diff / 60 ) );
+		}
+		if ( $diff < 86400 ) {
+			/* translators: %d: number of hours since the last sync. */
+			return sprintf( __( '%dh ago', 'patchstack' ), (int) floor( $diff / 3600 ) );
+		}
+		/* translators: %d: number of days since the last sync. */
+		return sprintf( __( '%dd ago', 'patchstack' ), (int) floor( $diff / 86400 ) );
+	}
+
+	/**
+	 * Get the timestamp of the last successful API sync.
+	 *
+	 * Prefers patchstack_last_sync, which is stamped on every successful (200 OK)
+	 * API request (log/software uploads, rule pulls, license verify, ping, etc.),
+	 * so it reflects real sync activity rather than only license verification.
+	 * Falls back to patchstack_last_license_check for sites that have not synced
+	 * yet since this option was introduced.
+	 *
+	 * @return int UNIX timestamp, or 0 if never synced.
+	 */
+	public function get_last_sync_time() {
+		$last_sync = (int) get_option( 'patchstack_last_sync', 0 );
+		if ( $last_sync > 0 ) {
+			return $last_sync;
+		}
+
+		return (int) get_option( 'patchstack_last_license_check', 0 );
 	}
 
 	/**
@@ -322,6 +379,12 @@ class P_Core {
 			}
 
 			// Use the Sodium polyfill library part of WordPress core.
+			if ( ! file_exists( ABSPATH . WPINC . '/sodium_compat/autoload.php' ) ) {
+				return [
+					'cipher' => $message,
+					'nonce' => ''
+				];
+			}
 			require_once ABSPATH . WPINC . '/sodium_compat/autoload.php';
 			$key = \Sodium\crypto_generichash( AUTH_KEY );
 
@@ -358,6 +421,9 @@ class P_Core {
 				$key = sodium_crypto_generichash( AUTH_KEY );
 				$dec = sodium_crypto_secretbox_open( sodium_hex2bin( $cipher ), sodium_hex2bin( $nonce ), $key );
 			} else {
+				if ( ! file_exists( ABSPATH . WPINC . '/sodium_compat/autoload.php' ) ) {
+					return $cipher;
+				}
 				require_once ABSPATH . WPINC . '/sodium_compat/autoload.php';
 				$key = \Sodium\crypto_generichash( AUTH_KEY );
 				$dec = \Sodium\crypto_secretbox_open( sodium_hex2bin( $cipher ), sodium_hex2bin( $nonce ), $key );

@@ -78,14 +78,16 @@ if (!empty($secretToken) && !$this->is_connected() ){
 				if (!isset($_GET['key'])) {
 			?>
 			<div class="patchstack-rows">
-				<div>
+				<div class="patchstack-connection-row">
 					<span class="hint--top" aria-label="<?php !$this->is_connected() ? esc_html_e( 'There is not a proper connection to Patchstack', 'patchstack' ) : esc_html_e( 'Actively monitoring for new vulnerabilities', 'patchstack' ); ?>">
-						<?php esc_html_e( 'Connection status', 'patchstack' ); ?> 
+						<?php esc_html_e( 'Connection status', 'patchstack' ); ?>
 						<span><img src="<?php echo esc_url( $this->plugin->url ); ?>assets/images/info.svg" alt=""></span>
+						<a href="#" class="patchstack-retry-link"><?php esc_html_e( 'Retry', 'patchstack' ); ?></a>
 					</span>
 
-					<span class="<?php echo !$this->is_connected() ? 'ps-label has-error' : 'ps-label has-success'; ?>">
-						<?php !$this->is_connected() ? esc_html_e( 'Disconnected', 'patchstack' ) : esc_html_e( 'Synced', 'patchstack' ); ?>
+					<span class="patchstack-connection-status <?php echo $this->is_connected() ? 'is-connected' : 'is-disconnected'; ?>">
+						<span class="patchstack-last-sync"><?php echo esc_html( $this->format_relative_time( $this->get_last_sync_time() ) ); ?></span>
+						<span class="patchstack-status-dot" aria-hidden="true"></span>
 					</span>
 				</div>
 

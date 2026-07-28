@@ -20,12 +20,12 @@ class P_Listener extends P_Core {
 		parent::__construct( $core );
 
 		// Only hook into the action if the authentication is set and valid.
-		if ( isset( $_POST['patchstack_secret'] ) && $this->verifyToken( $_POST['patchstack_secret'] ) ) {
+		if ( isset( $_POST['patchstack_secret'] ) && is_string( $_POST['patchstack_secret'] ) && $this->verifyToken( $_POST['patchstack_secret'] ) ) {
 			add_action( 'init', [ $this, 'handleRequest' ] );
 		}
 
 		// OTT action.
-		if ( isset( $_POST['patchstack_ott_action'] ) ) {
+		if ( isset( $_POST['patchstack_ott_action'] ) && is_string( $_POST['patchstack_ott_action'] ) ) {
 			$ott = get_option( 'patchstack_ott_action', '' );
 			if ( ! empty( $ott ) && hash_equals( $ott, $_POST['patchstack_ott_action'] ) ) {
 				$this->setIpHeader();
@@ -33,7 +33,7 @@ class P_Listener extends P_Core {
 		}
 
 		// License (re)activation.
-		if ( isset( $_POST['patchstack_ra_action'] ) ) {
+		if ( isset( $_POST['patchstack_ra_action'] ) && is_string( $_POST['patchstack_ra_action'] ) ) {
 			$aas = get_option( 'patchstack_activation_secret', '' );
 			$aat = get_option( 'patchstack_activation_time', '' );
 			if ( ! empty( $aas ) && hash_equals( $aas, $_POST['patchstack_ra_action'] ) && ! empty ( $aat ) && ( time() - $aat ) < 1800 ) {
@@ -118,7 +118,8 @@ class P_Listener extends P_Core {
 	 * @return boolean
 	 */
 	public function verifyToken( $secret ) {
-		if ( empty ( $secret ) ) {
+		// A non-string value (e.g. patchstack_secret[]=x) would fatal in base64_decode() on PHP 8.
+		if ( empty ( $secret ) || ! is_string( $secret ) ) {
 			return false;
 		}
 
@@ -249,7 +250,7 @@ class P_Listener extends P_Core {
 		$core = get_site_transient( 'update_core' );
 
 		// Any updates available?
-		if ( ! isset( $core->updates ) ) {
+		if ( ! isset( $core->updates[0] ) ) {
 			$this->returnResults( false, null, 'No update available at this time.' );
 		}
 
@@ -277,7 +278,7 @@ class P_Listener extends P_Core {
 
 		// Synchronize again with the API.
 		do_action( 'patchstack_send_software_data' );
-		$this->returnResults( $results, 'WordPress core has been upgraded.' );
+		$this->returnResults( $result, 'WordPress core has been upgraded.', 'The WordPress core could not be upgraded.' );
 	}
 
 	/**
@@ -507,11 +508,16 @@ class P_Listener extends P_Core {
 		foreach ( $options as $key => $value ) {
 			if ( array_key_exists( $key, $this->plugin->admin_options->options ) ) {
 
+				// Booleans would persist as '1' / '' otherwise, store them as 1/0 so type checks behave consistently.
+				if ( is_bool( $value ) ) {
+					$value = $value ? 1 : 0;
+				}
+
 				// Some options should not be filtered and could cause unexpected behavior if they are filtered.
 				if ( ! in_array( $key, $exclude_filter ) ) {
 					$value = map_deep( $value, 'wp_filter_nohtml_kses' );
 				}
-				
+
 				update_option( $key, $value );
 			}
 		}
@@ -537,7 +543,7 @@ class P_Listener extends P_Core {
 
 		// Check for potential missing options and add them to the output.
 		foreach( [ 'patchstack_firewall_custom_rules' ] as $slug ) {
-			if ( ! isset ( $found[$slug] ) ) {
+			if ( ! in_array( $slug, $found, true ) ) {
 				$settings[] = [
 					'option_name'  => $slug,
 					'option_value' => $this->get_option( $slug, '' )
@@ -702,7 +708,7 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function unbanLogin() {
-		if ( ! isset( $_POST['id'], $_POST['type'] ) || !ctype_digit( $_POST['id'] ) ) {
+		if ( ! isset( $_POST['id'], $_POST['type'] ) || ! is_scalar( $_POST['id'] ) || ! ctype_digit( (string) $_POST['id'] ) ) {
 			exit;
 		}
 

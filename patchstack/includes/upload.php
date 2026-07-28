@@ -56,7 +56,7 @@ class P_Upload extends P_Core {
 		}
 
 		// Make sure to not keep calling this function.
-		update_option( 'patchstack_software_upload_attempted', true );
+		update_option( 'patchstack_software_upload_attempted', 1 );
 
 		// Synchronize the software list with the API.
 		$results = $this->plugin->api->upload_software( [ 'software' => json_encode( $data ) ] );
@@ -116,7 +116,7 @@ class P_Upload extends P_Core {
 			return;
 		}
 
-		update_option( 'patchstack_firewall_log_processing', true );
+		update_option( 'patchstack_firewall_log_processing', 1 );
 
 		// Attempt to fetch data, if any.
 		$lastId = get_option( 'patchstack_firewall_log_lastid', 0 );
@@ -141,12 +141,15 @@ class P_Upload extends P_Core {
 			// Construct the array to be uploaded to our API.
 			$logs = [];
 			foreach ( $items as $item ) {
-	
+
+				// Always advance the cursor so filtered rows don't stall the batch.
+				$lastId = $item->id;
+
 				// Entries that we don't want to store on the API side.
 				if ( stripos( $item->request_uri, 'wp-comments-post' ) !== false ) {
 					continue;
 				}
-	
+
 				// Push to entries to be uploaded.
 				$logs[] = [
 					'ip'          => $item->ip,
@@ -157,8 +160,6 @@ class P_Upload extends P_Core {
 					'log_date'    => $item->log_date,
 					'post_data'   => $item->post_data,
 				];
-
-				$lastId = $item->id;
 			}
 	
 			// JSON encode the logs and upload.
@@ -170,7 +171,9 @@ class P_Upload extends P_Core {
 				]
 			);
 
-			if ( isset( $results['errors'] ) ) {
+			// A failed upload returns a status code or null instead of an array;
+			// bail without advancing so the logs are not deleted before they reach the API.
+			if ( ! is_array( $results ) || isset( $results['errors'] ) ) {
 				update_option( 'patchstack_firewall_log_lastid', $successId );
 				break;
 			}
@@ -183,7 +186,7 @@ class P_Upload extends P_Core {
 		$wpdb->query( 'DELETE FROM ' . $wpdb->prefix . 'patchstack_firewall_log WHERE id <= ' . (int) $successId );
 
 		// No longer processing.
-		update_option( 'patchstack_firewall_log_processing', false );
+		update_option( 'patchstack_firewall_log_processing', 0 );
 	}
 
 	/**
@@ -204,7 +207,7 @@ class P_Upload extends P_Core {
 			return;
 		}
 
-		update_option( 'patchstack_eventlog_processing', true );
+		update_option( 'patchstack_eventlog_processing', 1 );
 
 		// Determine if we should upload failed logins to the app.
 		$where = " AND action != 'failed login' ";
@@ -239,7 +242,10 @@ class P_Upload extends P_Core {
 			// Send to the API.
 			$logs = json_encode( $items );
 			$results = $this->plugin->api->upload_activity_logs( [ 'logs' => $logs ] );
-			if ( isset( $results['errors'] ) ) {
+
+			// A failed upload returns a status code or null instead of an array;
+			// bail without advancing so the logs are not deleted before they reach the API.
+			if ( ! is_array( $results ) || isset( $results['errors'] ) ) {
 				update_option( 'patchstack_eventlog_lastid', $successId );
 				break;
 			}
@@ -252,7 +258,7 @@ class P_Upload extends P_Core {
 		$wpdb->query( 'DELETE FROM ' . $wpdb->prefix . 'patchstack_event_log WHERE id <= ' . (int) $successId );
 
 		// No longer processing.
-		update_option( 'patchstack_eventlog_processing', false );
+		update_option( 'patchstack_eventlog_processing', 0 );
 	}
 
 	/**
@@ -385,8 +391,6 @@ class P_Upload extends P_Core {
 			return;
 		}
 
-		update_option( 'patchstack_firewall_log_ap_processing', true );
-
 		// Attempt to load config file.
 		$logs = __DIR__ . '/../../../pslogs/logs.php';
 		if ( ! file_exists( $logs ) ) {
@@ -397,6 +401,10 @@ class P_Upload extends P_Core {
 		if ( ! file_exists( __DIR__ . '/../lib/patchstack/vendor/autoload.php' ) ) {
 			return;
 		}
+
+		// Set the processing lock only once we know there is work to do, otherwise an
+		// early return above would leave the lock stuck and block all future imports.
+		update_option( 'patchstack_firewall_log_ap_processing', 1 );
 
 		global $wpdb;
 
@@ -418,6 +426,11 @@ class P_Upload extends P_Core {
 			// Decode the line to import.
 			$data = json_decode( base64_decode( $line ), true );
 			if ( ! $data || ! is_array( $data ) ) {
+				continue;
+			}
+
+			// Skip malformed entries that are missing the fields we rely on below.
+			if ( ! isset( $data['site_id'], $data['ip'], $data['request_uri'], $data['user_agent'], $data['method'], $data['fid'], $data['post_data'] ) ) {
 				continue;
 			}
 
@@ -449,6 +462,6 @@ class P_Upload extends P_Core {
 		file_put_contents( $logs, '<?php exit; ?>' . PHP_EOL );
 
 		// Update processing state.
-		update_option( 'patchstack_firewall_log_ap_processing', false );
+		update_option( 'patchstack_firewall_log_ap_processing', 0 );
 	}
 }

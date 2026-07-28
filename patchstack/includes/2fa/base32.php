@@ -164,7 +164,7 @@ class Base32Static {
 			$eight_bits = str_split( $x, 8 );
 
 			for ( $z = 0; $z < count( $eight_bits ); $z++ ) {
-				$binary_string .= ( ( $y = chr( base_convert( $eight_bits[ $z ], 2, 10 ) ) ) || ord( $y ) == 48 ) ? $y : '';
+				$binary_string .= chr( base_convert( $eight_bits[ $z ], 2, 10 ) );
 			}
 		}
 

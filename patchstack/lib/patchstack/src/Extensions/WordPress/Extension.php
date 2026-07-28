@@ -78,7 +78,7 @@ class Extension implements ExtensionInterface
             $request['raw'] = isset($request['raw']) && is_array($request['raw']) ? $request['raw'][0] : $request['raw'];
 
             // Remove raw payload if not present.
-            if ((is_array($request['raw']) && count($request['raw'])) == 0 || empty($request['raw'])) {
+            if ((is_array($request['raw']) && count($request['raw']) == 0) || empty($request['raw'])) {
                 unset($request['raw']);
             }
         }
@@ -286,7 +286,7 @@ class Extension implements ExtensionInterface
                         }
                         break;
                     case 'url': // URL match.
-                        if (strpos(strtolower($_SERVER['REQUEST_URI']), $val) !== false) {
+                        if (isset($_SERVER['REQUEST_URI']) && strpos(strtolower($_SERVER['REQUEST_URI']), $val) !== false) {
                             return true;
                         }
                         break;
@@ -322,6 +322,11 @@ class Extension implements ExtensionInterface
 
         foreach ($whitelistRules as $whitelist) {
             $whitelistRule = json_decode($whitelist['rule']);
+
+            // Skip malformed rules; reading properties off null warns on PHP 8.
+            if (!is_object($whitelistRule)) {
+                continue;
+            }
 
             // If an IP address match is given, determine if it matches.
             $ip = isset($whitelistRule->rules, $whitelistRule->rules->ip_address) ? $whitelistRule->rules->ip_address : null;
@@ -414,6 +419,14 @@ class Extension implements ExtensionInterface
 	public function check_subnet_mask_rule( $ip, $range )
     {
 		list($range, $netmask) = explode( '/', $range, 2 );
+
+		// A malformed netmask would throw a TypeError on the arithmetic below on
+		// PHP 8; treat anything outside 0-32 as a non-match.
+		if ( ! is_numeric( $netmask ) || $netmask < 0 || $netmask > 32 ) {
+			return false;
+		}
+		$netmask = (int) $netmask;
+
 		$range_decimal         = ip2long( $range );
 		$ip_decimal            = ip2long( $ip );
 		$wildcard_decimal      = pow( 2, ( 32 - $netmask ) ) - 1;

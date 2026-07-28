@@ -47,21 +47,44 @@ class P_Firewall extends P_Core {
 		// Initiate the firewall processor with our settings.
 		$firewall = new Patchstack\Processor(
 			$extension,
-			json_decode(get_option('patchstack_firewall_rules_v3', '[]'), true),
-			json_decode(get_option('patchstack_whitelist_rules_v3', '[]'), true),
+			$this->decode_rule_option('patchstack_firewall_rules_v3'),
+			$this->decode_rule_option('patchstack_whitelist_rules_v3'),
 			[
 				'autoblockAttempts' => $this->get_option( 'patchstack_autoblock_attempts', 10 ),
 				'autoblockMinutes' => $this->get_option( 'patchstack_autoblock_minutes', 30 ),
 				'autoblockTime' => $this->get_option( 'patchstack_autoblock_blocktime', 60 ),
-				'whitelistKeysRules' => json_decode( get_option( 'patchstack_whitelist_keys_rules', '[]' ), true ),
+				'whitelistKeysRules' => $this->decode_rule_option( 'patchstack_whitelist_keys_rules' ),
 				'mustUsePluginCall' => $muCall
 			],
-			json_decode(get_option('patchstack_firewall_rules', '[]'), true),
-			json_decode(get_option('patchstack_whitelist_rules', '[]'), true)
+			$this->decode_rule_option('patchstack_firewall_rules'),
+			$this->decode_rule_option('patchstack_whitelist_rules')
 		);
 
 		// Launch the firewall.
 		$firewall->launch();
+	}
+
+	/**
+	 * Safely decode a stored rule option into an array. The option is expected to be
+	 * a JSON string, but may already be an array (or a malformed value); passing a
+	 * non-string to json_decode() is a fatal TypeError on PHP 8.
+	 *
+	 * @param string $name
+	 * @return array
+	 */
+	private function decode_rule_option( $name ) {
+		$value = get_option( $name, '[]' );
+
+		if ( is_array( $value ) ) {
+			return $value;
+		}
+
+		if ( ! is_string( $value ) ) {
+			return [];
+		}
+
+		$decoded = json_decode( $value, true );
+		return is_array( $decoded ) ? $decoded : [];
 	}
 
 	/**

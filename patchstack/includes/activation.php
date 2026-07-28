@@ -306,7 +306,7 @@ class P_Activation extends P_Core {
 		}
 
 		// Clear all Patchstack scheduled tasks.
-		$tasks = [ 'patchstack_zip_backup', 'patchstack_send_software_data', 'patchstack_send_hacker_logs', 'patchstack_send_visitor_logs', 'patchstack_send_event_logs', 'patchstack_reset_blocked_attacks', 'patchstack_post_firewall_rules', 'patchstack_post_firewall_htaccess_rules', 'patchstack_post_dynamic_firewall_rules', 'patchstack_update_license_status', 'patchstack_update_plugins', 'patchstack_send_ping', 'puc_cron_check_updates-webarx' ];
+		$tasks = [ 'patchstack_zip_backup', 'patchstack_send_software_data', 'patchstack_send_hacker_logs', 'patchstack_send_visitor_logs', 'patchstack_send_event_logs', 'patchstack_reset_blocked_attacks', 'patchstack_post_firewall_rules', 'patchstack_post_firewall_htaccess_rules', 'patchstack_post_dynamic_firewall_rules', 'patchstack_update_license_status', 'patchstack_update_plugins', 'patchstack_send_ping', 'patchstack_check_env', 'puc_cron_check_updates-webarx' ];
 		foreach ( $tasks as $task ) {
 			wp_clear_scheduled_hook( $task );
 		}
@@ -363,7 +363,7 @@ class P_Activation extends P_Core {
 			update_option( 'patchstack_license_activated', '1', true );
 
 			// Update license status and fetch policy settings.
-			$fetchPolicy = get_option( 'patchstack_last_license_check', 0 ) == 0;
+			$fetchPolicy = (int) get_option( 'patchstack_last_license_check', 0 ) == 0;
 			$this->plugin->api->update_license_status( $fetchPolicy );
 
 			// Perform post-activation actions, incl. access token retrieval.
@@ -750,7 +750,7 @@ class P_Activation extends P_Core {
 		// Ensure that the SERVER_SOFTWARE value is set.
 		$software = isset( $_SERVER['SERVER_SOFTWARE'] ) ? $_SERVER['SERVER_SOFTWARE'] : '';
 		if ( ! $software ) {
-			update_option( 'patchstack_firewall_ap_error', 'Unsupported SERVER_SOFTWARE, found: ' . $_SERVER['SERVER_SOFTWARE'] );
+			update_option( 'patchstack_firewall_ap_error', 'Unsupported SERVER_SOFTWARE, found: ' . $software );
 			return false;
 		}
 
@@ -766,9 +766,9 @@ class P_Activation extends P_Core {
 
 		// Attempt to find the Apache version, < 2.4 does not support <If>.
 		// This depends on ServerTokens value, so only stop execution if we can't find the specific unsupported versions.
-		$version = function_exists( 'apache_get_version' ) ? apache_get_version() : $_SERVER['SERVER_SOFTWARE'];
-		if ( stripos( $version, 'Apache/2.4' ) === false ) {
-			update_option( 'patchstack_firewall_ap_error', 'Unsupported SERVER_SOFTWARE, found: ' . $_SERVER['SERVER_SOFTWARE'] );
+		$version = function_exists( 'apache_get_version' ) ? apache_get_version() : $software;
+		if ( ! $is_litespeed && stripos( $version, 'Apache/2.4' ) === false ) {
+			update_option( 'patchstack_firewall_ap_error', 'Unsupported SERVER_SOFTWARE, found: ' . $software );
 			return false;
 		}
 
@@ -842,8 +842,9 @@ auto_prepend_file = '" . $mu_file_as . "'
 	 * @return void
 	 */
 	public function updated_option( $option_name, $old_value, $value ) {
-		// Only allow to run for our options.
-		if ( !in_array( $option_name, [ 'patchstack_basic_firewall', 'patchstack_license_free', 'patchstack_firewall_rules_v3_ap' ] ) ) {
+		// Only allow to run for our options. The IP header is embedded in the AP config
+		// file too, so a change there must also regenerate it.
+		if ( !in_array( $option_name, [ 'patchstack_basic_firewall', 'patchstack_license_free', 'patchstack_firewall_rules_v3_ap', 'patchstack_firewall_ip_header' ] ) ) {
 			return;
 		}
 

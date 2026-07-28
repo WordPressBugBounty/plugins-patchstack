@@ -139,7 +139,7 @@ class P_Hardening extends P_Core {
 	 */
 	public function disable_wpjson() {
 		// Some default exceptions.
-		$path = parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
+		$path = isset( $_SERVER['REQUEST_URI'] ) ? (string) parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ) : '';
 		$whitelists = [ '/wp-json/contact-form-7/' ];
 		foreach ( $whitelists as $whitelist ) {
 			if ( stripos( $path, $whitelist ) !== false ) {
@@ -222,6 +222,8 @@ class P_Hardening extends P_Core {
 	 * @return array
 	 */
 	public function captcha_check() {
+		$secret_key = '';
+		$site_key   = '';
 		switch ( $this->get_option( 'patchstack_captcha_type' ) ) {
 			case 'v2':
 				$secret_key = trim( $this->get_option( 'patchstack_captcha_private_key' ) );
@@ -282,7 +284,6 @@ class P_Hardening extends P_Core {
 				'secret'   => $privatekey,
 				'response' => $_POST['g-recaptcha-response'],
 			],
-			'sslverify' => false,
 		];
 
 		if ($type != 'turnstile') {
@@ -304,7 +305,7 @@ class P_Hardening extends P_Core {
 			die( wp_safe_redirect( get_site_url() ) );
 		}
 
-		if ( stripos( $_SERVER['REQUEST_URI'], 'v2/users' ) !== false || ( isset( $_REQUEST['rest_route'] ) && stripos( $_REQUEST['rest_route'], 'v2/users' ) !== false ) ) {
+		if ( ( isset( $_SERVER['REQUEST_URI'] ) && stripos( $_SERVER['REQUEST_URI'], 'v2/users' ) !== false ) || ( isset( $_REQUEST['rest_route'] ) && stripos( $_REQUEST['rest_route'], 'v2/users' ) !== false ) ) {
 			if ( ! is_user_logged_in() ) {
 				die( wp_safe_redirect( get_site_url() ) );
 			}

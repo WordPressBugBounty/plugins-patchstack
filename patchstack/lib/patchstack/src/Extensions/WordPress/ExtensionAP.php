@@ -38,7 +38,7 @@ class ExtensionAP implements ExtensionInterface
             $request['raw'] = isset($request['raw']) && is_array($request['raw']) ? $request['raw'][0] : $request['raw'];
 
             // Remove raw payload if not present.
-            if ((is_array($request['raw']) && count($request['raw'])) == 0 || empty($request['raw'])) {
+            if ((is_array($request['raw']) && count($request['raw']) == 0) || empty($request['raw'])) {
                 unset($request['raw']);
             }
         }

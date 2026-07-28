@@ -18,9 +18,9 @@ function patchstack_get_active_domain( $options )
         // Attempt to match against substring match.
         foreach ( $options as $option ) {
             // Only needed if the site is under a different folder path.
-            if ( strpos( $option[$base], '/' ) === false ) {
+            if ( ! isset( $option[$base] ) || strpos( $option[$base], '/' ) === false ) {
                 continue;
-            } 
+            }
 
             // Make sure there's a substring match.
             if ( substr( $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], 0, strlen( $option[$base] ) ) == $option[$base] ) {
@@ -30,7 +30,7 @@ function patchstack_get_active_domain( $options )
 
         // Attempt to match against just the hostname.
         foreach ( $options as $option ) {
-            if ( strpos( $option[$base], '/' ) === false && $_SERVER['HTTP_HOST'] == $option[$base]) {
+            if ( isset( $option[$base] ) && strpos( $option[$base], '/' ) === false && $_SERVER['HTTP_HOST'] == $option[$base]) {
                 return $option;
             }
         }
@@ -48,15 +48,21 @@ function patchstack_get_active_domain( $options )
  */
 function patchstack_get_should_run( $options )
 {
-    if ( $options['patchstack_license_activated'] == 0 ) {
+    // A stale config from an older version may be missing keys; treat anything
+    // absent as "do not run" and avoid undefined-key warnings before WordPress loads.
+    if ( ! isset( $options['patchstack_license_activated'] ) || $options['patchstack_license_activated'] == 0 ) {
         return false;
     }
 
-    if ( $options['patchstack_basic_firewall'] != 1 ) {
+    if ( ! isset( $options['patchstack_basic_firewall'] ) || $options['patchstack_basic_firewall'] != 1 ) {
         return false;
     }
 
-    if ( $options['patchstack_license_free'] == 1 ) {
+    if ( ! isset( $options['patchstack_license_free'] ) || $options['patchstack_license_free'] == 1 ) {
+        return false;
+    }
+
+    if ( ! isset( $options['patchstack_firewall_rules_v3_ap'] ) ) {
         return false;
     }
 

@@ -150,6 +150,7 @@ class P_Api extends P_Core {
 			// Defer to 'expires' if it is provided instead.
 			if ( isset( $result->expires_in ) ) {
 				if ( ! is_numeric( $result->expires_in ) ) {
+					$response_data->result  = 'failed';
 					$response_data->message = 'expires_in value must be an integer';
 					return $response_data;
 				}
@@ -218,6 +219,11 @@ class P_Api extends P_Core {
 			return wp_remote_retrieve_response_code( $response );
 		}
 
+		// A 200 OK means we successfully communicated with the API for this sync
+		// action (license verify, log/software upload, rule pull, ping, etc.), so
+		// record it as the last successful sync time.
+		$this->update_blog_option( $this->blog_id, 'patchstack_last_sync', time() );
+
 		return json_decode( wp_remote_retrieve_body( $response ), true );
 	}
 
@@ -228,6 +234,10 @@ class P_Api extends P_Core {
 	 * @return boolean If the token has expired.
 	 */
 	public function has_expired( $expiresin ) {
+		// A stored expiry of 0 means the token never expires.
+		if ( $expiresin === 0 ) {
+			return false;
+		}
 		return ( $expiresin < ( time() + 30 ) );
 	}
 
@@ -270,7 +280,7 @@ class P_Api extends P_Core {
 
 		// Active subscription.
 		if ( isset( $response['active'] ) ) {
-			$this->update_blog_option( $this->blog_id, 'patchstack_license_activated', $response['active'] == true );
+			$this->update_blog_option( $this->blog_id, 'patchstack_license_activated', $response['active'] == true ? 1 : 0 );
 		}
 
 		// Subscription class.
@@ -281,7 +291,7 @@ class P_Api extends P_Core {
 
 		// Managed site status.
 		if ( isset( $response['managed'], $response['managed_string'] ) ) {
-			$this->update_blog_option( $this->blog_id, 'patchstack_managed', $response['managed'] );
+			$this->update_blog_option( $this->blog_id, 'patchstack_managed', $response['managed'] ? 1 : 0 );
 			$this->update_blog_option( $this->blog_id, 'patchstack_managed_text', $response['managed_string'] );
 		}
 
@@ -296,6 +306,11 @@ class P_Api extends P_Core {
 				// Make sure the option exists.
 				if ( ! array_key_exists( $key, $this->plugin->admin_options->options ) ) {
 					continue;
+				}
+
+				// Booleans would persist as '1' / '' otherwise, store them as 1/0 so type checks behave consistently.
+				if ( is_bool( $value ) ) {
+					$value = $value ? 1 : 0;
 				}
 
 				// Update the option.

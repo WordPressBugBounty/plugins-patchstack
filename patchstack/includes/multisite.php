@@ -44,12 +44,12 @@ class P_Multisite extends P_Core {
 	 */
 	private function run_migration( ) {
 		// Must be a number.
-		if ( !ctype_digit( $_GET['site'] ) ) {
+		if ( ! isset( $_GET['site'] ) || ! is_scalar( $_GET['site'] ) || ! ctype_digit( (string) $_GET['site'] ) ) {
 			exit;
 		}
 
 		// Site must be valid and exists.
-		$site = get_site( $_GET['site'] );
+		$site = function_exists( 'get_site' ) ? get_site( $_GET['site'] ) : null;
 		if ( is_null( $site ) ) {
 			exit;
 		}

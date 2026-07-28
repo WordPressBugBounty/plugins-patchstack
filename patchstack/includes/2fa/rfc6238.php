@@ -19,11 +19,20 @@ class TokenAuth6238 {
 		$key           = Base32Static::decode( $secretkey );
 		$unixtimestamp = time() / 30;
 
+		// Without a valid decoded key there is nothing to verify against, and
+		// passing an empty key to hash_hmac() is deprecated on PHP 8.1+.
+		if ( ! is_string( $key ) || $key === '' ) {
+			return false;
+		}
+
 		for ( $i = -( $rangein30s ); $i <= $rangein30s; $i++ ) {
 			$checktime = (int) ( $unixtimestamp + $i );
 			$thiskey   = self::oath_hotp( $key, $checktime );
 
-			if ( self::stringEquals( (string) self::oath_truncate( $thiskey, 6 ), (string) $code ) ) {
+			// oath_truncate() returns an int, so zero-pad to 6 digits to match the
+			// codes authenticator apps display (e.g. "012345").
+			$computed = str_pad( (string) self::oath_truncate( $thiskey, 6 ), 6, '0', STR_PAD_LEFT );
+			if ( self::stringEquals( $computed, (string) $code ) ) {
 				return true;
 			}
 		}
@@ -63,7 +72,7 @@ class TokenAuth6238 {
 		$binary = implode( $cur_counter );
 
 		// Pad to 8 characters
-		str_pad( $binary, 8, chr( 0 ), STR_PAD_LEFT );
+		$binary = str_pad( $binary, 8, chr( 0 ), STR_PAD_LEFT );
 		return hash_hmac( 'sha1', $binary, $key );
 	}
 

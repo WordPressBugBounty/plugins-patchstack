@@ -86,6 +86,7 @@ class P_Ban extends P_Core {
 
 		$whitelisted = false;
 		foreach ( $ipRules as $ipRule ) {
+			$ipRule = trim( $ipRule );
 			if ( strpos( $ipRule, '*' ) !== false ) {
 				$whitelisted = $this->check_wildcard_rule( $ip, $ipRule );
 			} elseif ( strpos( $ipRule, '-' ) !== false ) {
@@ -113,6 +114,14 @@ class P_Ban extends P_Core {
 	 */
 	public function check_subnet_mask_rule( $ip, $range ) {
 		list($range, $netmask) = explode( '/', $range, 2 );
+
+		// A malformed netmask (e.g. "1.2.3.4/abc") would throw a TypeError on the
+		// arithmetic below on PHP 8; treat anything outside 0-32 as a non-match.
+		if ( ! is_numeric( $netmask ) || $netmask < 0 || $netmask > 32 ) {
+			return false;
+		}
+		$netmask = (int) $netmask;
+
 		$range_decimal         = ip2long( $range );
 		$ip_decimal            = ip2long( $ip );
 		$wildcard_decimal      = pow( 2, ( 32 - $netmask ) ) - 1;

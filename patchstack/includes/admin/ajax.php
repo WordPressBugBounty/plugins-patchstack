@@ -25,6 +25,9 @@ class P_Admin_Ajax extends P_Core {
 			// Auto license activator.
 			add_action( 'wp_ajax_patchstack_activate_auto', [ $this, 'auto_activate' ] );
 			add_action( 'wp_ajax_patchstack_activation_status', [ $this, 'activation_status' ] );
+
+			// Manual connection re-check (Retry link on the settings card).
+			add_action( 'wp_ajax_patchstack_check_connection', [ $this, 'check_connection' ] );
 		}
 	}
 
@@ -86,5 +89,26 @@ class P_Admin_Ajax extends P_Core {
 		wp_send_json( [
 			'activated' => get_option( 'patchstack_clientid', false ) != false
 		] );
+	}
+
+	/**
+	 * Run a connection check on demand and return the new state for the settings card row.
+	 * Wraps P_Api::update_license_status() so the existing 422-handling happens for free; a
+	 * successful request stamps patchstack_last_sync, which get_last_sync_time() reads back.
+	 *
+	 * @return void
+	 */
+	public function check_connection() {
+		$this->plugin->api->update_license_status();
+
+		$timestamp = $this->get_last_sync_time();
+
+		wp_send_json(
+			[
+				'connected' => $this->is_connected(),
+				'timestamp' => $timestamp,
+				'label'     => $this->format_relative_time( $timestamp ),
+			]
+		);
 	}
 }

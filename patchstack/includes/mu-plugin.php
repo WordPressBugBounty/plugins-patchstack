@@ -11,7 +11,7 @@ if ( defined( 'PS_FW_MU_RAN' ) ) {
 }
 
 // Do not run if we're not supposed to.
-if ( get_option( 'patchstack_license_activated', 0 ) == 0 || get_option( 'patchstack_basic_firewall', 0 ) != 1 || get_option( 'patchstack_license_free', 0 ) == 1 ) {
+if ( (int) get_option( 'patchstack_license_activated', 0 ) == 0 || get_option( 'patchstack_basic_firewall', 0 ) != 1 || get_option( 'patchstack_license_free', 0 ) == 1 ) {
     return;
 }
 

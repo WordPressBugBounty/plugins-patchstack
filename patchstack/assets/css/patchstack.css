@@ -625,3 +625,51 @@ p.patchstack-error {
 .patchstack-top-16 {
     margin-top: 16px;
 }
+
+/* Connection status row with Retry + last sync */
+.patchstack-rows > div.patchstack-connection-row {
+    align-items: center;
+}
+.patchstack-retry-link {
+    color: #afe614;
+    text-decoration: none;
+    margin-left: 8px;
+    font-size: 14px;
+}
+.patchstack-retry-link:hover {
+    text-decoration: underline;
+}
+.patchstack-retry-link.is-loading {
+    opacity: 0.5;
+    cursor: wait;
+    pointer-events: none;
+}
+.patchstack-connection-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.patchstack-rows > div .patchstack-connection-status.is-connected,
+.patchstack-rows > div .patchstack-connection-status.is-connected .patchstack-last-sync {
+    color: #afe614;
+}
+.patchstack-rows > div .patchstack-connection-status.is-connected .patchstack-status-dot {
+    background-color: #afe614;
+}
+.patchstack-rows > div .patchstack-connection-status.is-disconnected,
+.patchstack-rows > div .patchstack-connection-status.is-disconnected .patchstack-last-sync {
+    color: #ed645e;
+}
+.patchstack-rows > div .patchstack-connection-status.is-disconnected .patchstack-status-dot {
+    background-color: #ed645e;
+}
+.patchstack-connection-status .patchstack-last-sync {
+    font-size: 16px;
+}
+.patchstack-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: currentColor;
+    display: inline-block;
+}

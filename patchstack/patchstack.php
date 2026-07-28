@@ -4,12 +4,12 @@
  * Plugin URI:  https://patchstack.com/?utm_medium=wp&utm_source=dashboard&utm_campaign=patchstack%20plugin
  * Author URI: https://patchstack.com/?utm_medium=wp&utm_source=dashboard&utm_campaign=patchstack%20plugin
  * Description: Patchstack identifies security vulnerabilities in WordPress plugins, themes, and core.
- * Version: 2.3.6
+ * Version: 2.3.7
  * Author: Patchstack
  * License: GPLv3
  * Text Domain: patchstack
  * Domain Path: /languages
- * Requires at least: 4.4
+ * Requires at least: 5.2
  * Requires PHP: 5.6
  */
 
@@ -59,7 +59,7 @@ if ( ! class_exists( 'patchstack' ) ) {
 		 *
 		 * @var string
 		 */
-		const VERSION = '2.3.6';
+		const VERSION = '2.3.7';
 
 		/**
 		 * API URL of Patchstack to communicate with.

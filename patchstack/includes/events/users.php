@@ -121,7 +121,9 @@ class P_Event_Users extends P_Event_Log {
 	 * @return void
 	 */
 	public function resetPassword( $errors, $user ) {
-		if ( is_a( $user, 'WP_User' ) ) {
+		// validate_password_reset also fires when the form is merely displayed (GET);
+		// only log when a new password was actually submitted.
+		if ( is_a( $user, 'WP_User' ) && isset( $_POST['pass1'] ) && ! empty( $_POST['pass1'] ) ) {
 			$this->insert(
 				[
 					'action'      => 'password reset',

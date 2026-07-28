@@ -92,6 +92,35 @@ window.Patchstack = window.Patchstack || {};
 				}
 			});
 		});
+
+		$( '.patchstack-retry-link' ).on( 'click', function( e ) {
+			e.preventDefault();
+
+			var $link = $( this );
+			if ( $link.hasClass( 'is-loading' ) ) {
+				return;
+			}
+			$link.addClass( 'is-loading' );
+
+			var postData = {
+				action: 'patchstack_check_connection',
+				PatchstackNonce: PatchstackVars.nonce
+			};
+
+			$.post( PatchstackVars.ajaxurl, postData, function( response ) {
+				if ( ! response ) {
+					return;
+				}
+				var $status = $( '.patchstack-connection-status' );
+				$status.toggleClass( 'is-connected', !! response.connected );
+				$status.toggleClass( 'is-disconnected', ! response.connected );
+				if ( typeof response.label === 'string' ) {
+					$( '.patchstack-last-sync' ).text( response.label );
+				}
+			} ).always( function() {
+				$link.removeClass( 'is-loading' );
+			} );
+		} );
 	};
 
 	$( plugin.init );

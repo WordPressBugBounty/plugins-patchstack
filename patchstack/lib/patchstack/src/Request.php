@@ -97,8 +97,9 @@ class Request
                     break;
                 }
 
-                // Determine if it's base64 encoded.
-                if (is_string($data) && preg_match('%^[a-zA-Z0-9/+]*={0,2}$%', $data)) {
+                // Determine if it's base64 encoded. mb_detect_encoding() requires the
+                // mbstring extension, which is optional; skip the substitution if absent.
+                if (is_string($data) && function_exists('mb_detect_encoding') && preg_match('%^[a-zA-Z0-9/+]*={0,2}$%', $data)) {
                     $decoded = base64_decode($data, true);
                     if ($decoded !== false) {
                         $encoding = mb_detect_encoding($decoded);

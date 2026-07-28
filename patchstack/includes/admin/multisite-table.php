@@ -89,22 +89,23 @@ class Patchstack_Network_Sites_Table extends WP_List_Table {
 		$free = get_option( 'patchstack_license_free', 0 ) == 1;
 		$nonce = wp_create_nonce( 'patchstack-migration' );
 
-		$blogs_ids = get_sites();
+		$blogs_ids = function_exists( 'get_sites' ) ? get_sites() : [];
 		foreach ( $blogs_ids as $b ) {
 			$site_info = get_blog_details( $b->blog_id );
 
 			// Search functionality
 			$match = false;
 			if ( isset( $_GET['s'] ) ) {
-				if ( strpos( $b->blog_id, $_GET['s'] ) ) {
+				$search = (string) $_GET['s'];
+				if ( strpos( (string) $b->blog_id, $search ) !== false ) {
 					$match = true;
 				}
 
-				if ( strpos( $b->blogname, $_GET['s'] ) ) {
+				if ( strpos( (string) $b->blogname, $search ) !== false ) {
 					$match = true;
 				}
 
-				if ( strpos( $site_info->siteurl, $_GET['s'] ) ) {
+				if ( strpos( (string) $site_info->siteurl, $search ) !== false ) {
 					$match = true;
 				}
 			}

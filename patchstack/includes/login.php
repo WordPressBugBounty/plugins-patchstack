@@ -175,7 +175,8 @@ class P_Login extends P_Core {
 		// Verify the code.
 		require_once dirname( __FILE__ ) . '/2fa/rfc6238.php';
 		$secret  = $this->tfa_get_secret( $user );
-		if ( ! TokenAuth6238::verify( $secret, trim( $_POST['patchstack_2fa_secretkey_verification'] ) ) ) {
+		$code    = isset( $_POST['patchstack_2fa_secretkey_verification'] ) ? trim( $_POST['patchstack_2fa_secretkey_verification'] ) : '';
+		if ( ! TokenAuth6238::verify( $secret, $code ) ) {
 			wc_add_notice( __( 'The 2FA authentication code you entered is invalid.', 'patchstack' ), 'error' );
 			return;
 		}

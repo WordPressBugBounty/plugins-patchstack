@@ -22,9 +22,10 @@ class P_Hide_Login extends P_Core {
 			return;
 		}
 
-		// Update the renamed login page if it's set to our hardcoded one.
-		if ( get_option( 'patchstack_mv_wp_login' ) == 0 && get_option( 'patchstack_rename_wp_login' ) == 'swlogin' ) {
-			update_site_option( 'patchstack_rename_wp_login', md5( wp_generate_password( 32, true, true ) ) );
+		// Update the renamed login page if it's set to our hardcoded one. Write with the
+		// same scope it is read back with below, otherwise this would rewrite every request.
+		if ( (int) get_option( 'patchstack_mv_wp_login', 0 ) == 0 && get_option( 'patchstack_rename_wp_login' ) == 'swlogin' ) {
+			update_option( 'patchstack_rename_wp_login', md5( wp_generate_password( 32, true, true ) ) );
 		}
 
 		// No need to continue if it is not enabled.
@@ -49,7 +50,7 @@ class P_Hide_Login extends P_Core {
 		}
 
 		// Determine if the user is whitelisted.
-		if ( ( stripos( $_SERVER['REQUEST_URI'], 'wp-login.php' ) !== false || $GLOBALS['pagenow'] === 'wp-login.php' || $_SERVER['PHP_SELF'] === '/wp-login.php' ) && ! $this->is_whitelisted() ) {
+		if ( ( ( isset( $_SERVER['REQUEST_URI'] ) && stripos( $_SERVER['REQUEST_URI'], 'wp-login.php' ) !== false ) || ( isset( $GLOBALS['pagenow'] ) && $GLOBALS['pagenow'] === 'wp-login.php' ) || ( isset( $_SERVER['PHP_SELF'] ) && $_SERVER['PHP_SELF'] === '/wp-login.php' ) ) && ! $this->is_whitelisted() ) {
 			if ( isset( $_REQUEST['action'] ) && in_array( $_REQUEST['action'], ['confirm_admin_email', 'postpass', 'lostpassword', 'retrievepassword', 'resetpass', 'rp', 'register', 'checkemail', 'confirmaction'] ) ) {
 				return;
 			}
@@ -58,7 +59,7 @@ class P_Hide_Login extends P_Core {
 		}
 
 		// If the current page is the renamed login page we give the user access for 10 minutes to the login page.
-		if ( strpos( $_SERVER['REQUEST_URI'], get_option( 'patchstack_rename_wp_login' ) ) !== false ) {
+		if ( isset( $_SERVER['REQUEST_URI'] ) && strpos( $_SERVER['REQUEST_URI'], get_option( 'patchstack_rename_wp_login' ) ) !== false ) {
 			// Whitelist the current IP address.
 			$this->whitelist_ip();
 
