@@ -35,4 +35,21 @@ require_once dirname( __FILE__ ) . '/../../admin/multisite-table.php';
 	<?php
 		$table->display();
 	?>
+	<?php if ( is_main_network() && current_user_can( 'manage_network_options' ) ) : ?>
+		<form method="post" action="<?php echo esc_url( network_admin_url( 'edit.php?action=patchstack_network_plugin_updates' ) ); ?>" class="wrap">
+			<?php if ( isset( $_GET['settings-updated'] ) && $_GET['settings-updated'] === '1' ) : ?>
+				<div class="notice notice-success inline"><p><?php esc_html_e( 'Remote management setting saved.', 'patchstack' ); ?></p></div>
+			<?php endif; ?>
+			<label>
+				<input type="checkbox" name="patchstack_network_plugin_updates" value="1" <?php checked( get_site_option( 'patchstack_network_plugin_updates', 0 ), 1 ); ?>>
+				<?php esc_html_e( 'Allow remote management from the primary site’s Patchstack dashboard', 'patchstack' ); ?>
+			</label>
+			<p class="description"><?php esc_html_e( 'Anyone with the primary site’s Patchstack signing key can then update WordPress, themes and plugins, switch plugins on or off, delete plugins, and reset 2FA and the cache for this network.', 'patchstack' ); ?></p>
+			<p class="description"><strong><?php esc_html_e( 'Only switch this on if you trust every administrator of the primary site.', 'patchstack' ); ?></strong> <?php esc_html_e( 'An administrator there can connect the site to a different Patchstack account and run these commands from it, without being a network administrator.', 'patchstack' ); ?></p>
+			<?php
+			wp_nonce_field( 'patchstack_network_plugin_updates', 'patchstack_network_updates_nonce', false );
+			submit_button( __( 'Save changes', 'patchstack' ), 'secondary' );
+			?>
+		</form>
+	<?php endif; ?>
 </div>

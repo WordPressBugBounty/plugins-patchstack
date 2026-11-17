@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * This class is used to communicate from the API to the plugin.
  */
 class P_Listener extends P_Core {
+	private $signed_request;
+	private $signature;
+	private $request_blog_id;
 
 	/**
 	 * Add the actions required to hide the login page.
@@ -19,16 +22,22 @@ class P_Listener extends P_Core {
 	public function __construct( $core ) {
 		parent::__construct( $core );
 
+		add_action( 'wp_scheduled_delete', [ $this, 'expire_signatures' ] );
+
 		// Only hook into the action if the authentication is set and valid.
-		if ( isset( $_POST['patchstack_secret'] ) && is_string( $_POST['patchstack_secret'] ) && $this->verifyToken( $_POST['patchstack_secret'] ) ) {
-			add_action( 'init', [ $this, 'handleRequest' ] );
+		if ( isset( $_POST['patchstack_secret'] ) ) {
+			$this->signed_request = $this->signed_payload( $_POST['patchstack_secret'], $this->signature );
+			if ( $this->signed_request !== false ) {
+				$this->request_blog_id = get_current_blog_id();
+				add_action( 'init', [ $this, 'handleRequest' ] );
+			}
 		}
 
 		// OTT action.
 		if ( isset( $_POST['patchstack_ott_action'] ) && is_string( $_POST['patchstack_ott_action'] ) ) {
 			$ott = get_option( 'patchstack_ott_action', '' );
 			if ( ! empty( $ott ) && hash_equals( $ott, $_POST['patchstack_ott_action'] ) ) {
-				$this->setIpHeader();
+				$this->setIpHeader( $_POST );
 			}
 		}
 
@@ -48,32 +57,10 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	public function handleRequest() {
-		// Get the request data for the listener action.
-		$request = json_decode(base64_decode($_POST['patchstack_secret']), true);
-		if ( ! isset( $request['data'] ) ) {
+		if ( ! isset( $this->signed_request['action'] ) || $this->request_blog_id !== get_current_blog_id() ) {
 			return;
 		}
-
-		// Parse it; backwards support.
-		$requestData = json_decode( $request['data'], true );
-
-		// Double JSON encoding, edge cases.
-		if ( ! is_array( $requestData ) ) {
-			$requestData = json_decode( $requestData, true );
-		}
-
-		// Failsafe.
-		if ( ! is_array( $requestData ) ) {
-			return;
-		}
-
-		// Set our primary keys.
-		foreach ($requestData as $key => $data) {
-			$_POST[$key] = $data;
-		}
-
-		// Action to execute.
-		$action = $requestData['action'];
+		$action = $this->signed_request['action'];
 
 		// Available mapped actions.
 		$actions = [
@@ -107,8 +94,40 @@ class P_Listener extends P_Core {
 			return;
 		}
 		
+		// A captured request stays inside its time window for minutes, so each signature runs once.
+		// It is claimed here and not on arrival: the API sends one signed request to admin-ajax.php
+		// and then to the site root, and an attempt that never got this far must not use it up.
+		if ( ! $this->acquire_lock( 'patchstack_replay_' . sha1( $this->signature ), 11 * MINUTE_IN_SECONDS ) ) {
+			$this->returnResults( false, null, 'This request has already been received.' );
+		}
+
+		$method = $actions[ $action ];
+		$updates = [ 'wordpressCoreUpgrade', 'themeUpgrade', 'pluginsUpgrade', 'pluginsDelete' ];
+		if ( in_array( $method, $updates, true ) && ! wp_is_file_mod_allowed( 'patchstack_remote_management' ) ) {
+			$this->returnResults( false, null, 'File changes are disabled on this installation.' );
+		}
+		// Only the primary site evaluates the network's existing WordPress update policy.
+		if ( $method === 'pluginsUpgrade' && is_multisite() && is_main_network() && is_main_site() ) {
+			$this->pluginsUpgrade( true );
+			return;
+		}
+		if ( is_multisite() && in_array( $method, array_merge( $updates, [ 'pluginsToggle', 'resetTFA', 'resetCache' ] ), true )
+			&& ! $this->network_allows_action( $this->network_grant() ) ) {
+			$this->returnResults( false, null, 'This action requires authorization from the network administrator.' );
+		}
+
 		// Execute the action.
-		call_user_func( [ $this, $actions[ $action ] ] );
+		$this->$method();
+	}
+
+	// The network administrator's grant covers commands signed with the primary site's key.
+	// A subsite's key never inherits it.
+	private function network_grant() {
+		return is_main_network() && is_main_site() && in_array( get_site_option( 'patchstack_network_plugin_updates', 0 ), [ 1, '1' ], true );
+	}
+
+	private function network_allows_action( $default ) {
+		return apply_filters( 'patchstack_allow_network_remote_management', $default, $this->request_blog_id, $this->signed_request['action'] );
 	}
 
 	/**
@@ -118,46 +137,48 @@ class P_Listener extends P_Core {
 	 * @return boolean
 	 */
 	public function verifyToken( $secret ) {
-		// A non-string value (e.g. patchstack_secret[]=x) would fatal in base64_decode() on PHP 8.
-		if ( empty ( $secret ) || ! is_string( $secret ) ) {
+		return $this->signed_payload( $secret ) !== false;
+	}
+
+	public function expire_signatures() {
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare(
+			"DELETE FROM $wpdb->options WHERE option_name LIKE %s AND CAST(SUBSTRING_INDEX(option_value, ':', 1) AS UNSIGNED) <= %d",
+			$wpdb->esc_like( 'patchstack_replay_' ) . '%',
+			time()
+		) );
+	}
+
+	private function signed_payload( $secret, &$signature = null ) {
+		if ( ! is_string( $secret ) ) {
+			return false;
+		}
+		$request = json_decode( base64_decode( $secret ), true );
+		if ( ! isset( $request['nonce'], $request['time'], $request['data'], $request['hmac'] )
+			|| ( ! is_string( $request['nonce'] ) && ! is_int( $request['nonce'] ) ) || ! is_string( $request['data'] ) || ! is_string( $request['hmac'] )
+			|| ( ! is_int( $request['time'] ) && ! is_string( $request['time'] ) )
+			|| ! ctype_digit( (string) $request['time'] ) || (string) (int) $request['time'] !== (string) $request['time']
+			|| abs( (int) floor( time() / 30 ) - (int) $request['time'] ) > 10 ) {
 			return false;
 		}
 
-		$secret = base64_decode( $secret );
-		$request = json_decode( $secret, true );
-		if ( ! $request || ! isset( $request['nonce'], $request['data'], $request['hmac'], $request['time'] ) ) {
-		  return false;
-		}
-
-        // +- 10 minutes.
-        $found = false;
-        for ( $i = -10; $i <= 10; $i++ ) {
-            if ( floor(( time() + ( $i * 30 ) ) / 30 ) == $request['time'] ) {
-                $found = true;
-            }
-        }
-
-        // Timestamp must match.
-        if ( ! $found ) {
-            return false;
-        }
-
-        // Get client id and key.
 		$id  = get_option( 'patchstack_clientid' );
 		$key = $this->get_secret_key();
-		if ( empty( $id ) || empty ( $key ) ) {
+		if ( empty( $id ) || empty( $key ) ) {
 			return false;
 		}
+		$hmac = hash_hmac( 'sha1', $request['nonce'] . $request['time'] . $request['data'], $key . '-' . $id );
+		if ( ! hash_equals( $hmac, $request['hmac'] ) ) {
+			return false;
+		}
+		$signature = $hmac;
 
-		// Compute the hmac.
-        $hmac = hash_hmac( 'sha1', $request['nonce'] . $request['time'] . $request['data'], $key . '-' . $id );
-
-        // Ensure it matches.
-        if ( ! hash_equals( $hmac, $request['hmac'] ) ) {
-            return false;
-        }
-
-        return true;
+		$data = json_decode( $request['data'], true );
+		if ( is_string( $data ) ) {
+			// Older clients can double-encode the signed body.
+			$data = json_decode( $data, true );
+		}
+		return isset( $data['action'] ) && is_string( $data['action'] ) ? $data : false;
 	}
 
 	/**
@@ -287,14 +308,14 @@ class P_Listener extends P_Core {
 	 * @return string|void
 	 */
 	private function themeUpgrade() {
-		if ( !isset( $_POST['patchstack_theme_upgrade'] ) ) {
+		if ( !isset( $this->signed_request['patchstack_theme_upgrade'] ) ) {
 			return;
 		}
 
 		@set_time_limit( 180 );
 
 		// Require some files we need to execute the upgrade.
-		$theme = wp_filter_nohtml_kses( $_POST['patchstack_theme_upgrade'] );
+		$theme = wp_filter_nohtml_kses( $this->signed_request['patchstack_theme_upgrade'] );
 		@include_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 		if ( file_exists( ABSPATH . 'wp-admin/includes/class-theme-upgrader.php' ) ) {
 			@include_once ABSPATH . 'wp-admin/includes/class-theme-upgrader.php';
@@ -306,7 +327,7 @@ class P_Listener extends P_Core {
 		$skin     = new Automatic_Upgrader_Skin();
 		$upgrader = new Theme_Upgrader( $skin );
 		$result   = $upgrader->upgrade( $theme, [ 'allow_relaxed_file_ownership' => true ] );
-		if ( ! $result ) {
+		if ( ! $result || is_wp_error( $result ) ) {
 			$this->returnResults( false, null, 'The theme could not be upgraded, most likely because of invalid filesystem connection information.' );
 		}
 
@@ -320,54 +341,62 @@ class P_Listener extends P_Core {
 	 *
 	 * @return string|void
 	 */
-	private function pluginsUpgrade() {
-		if (!isset( $_POST['patchstack_plugins_upgrade'] ) ) {
-			return;
+	private function pluginsUpgrade( $check_network_policy = false ) {
+		if ( empty( $this->signed_request['patchstack_plugins_upgrade'] ) || ! is_string( $this->signed_request['patchstack_plugins_upgrade'] ) ) {
+			$this->returnResults( false, null, 'No valid plugin names have been given.' );
 		}
 
 		@set_time_limit( 180 );
 
-		// Must have a valid number of plugins received to upgrade.
-		$plugins = wp_filter_nohtml_kses( $_POST['patchstack_plugins_upgrade'] );
-		$plugins = explode( '|', $plugins );
-		if ( count( $plugins ) == 0 ) {
-			$this->returnResults( false, null, 'No valid plugin names have been given.' );
-		}
+		$plugins = array_filter( explode( '|', $this->signed_request['patchstack_plugins_upgrade'] ), 'strlen' );
 
-		// Require some files we need to execute the upgrade.
-		@include_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-		if ( file_exists( ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php' ) ) {
-			@include_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
-		}
-		@include_once ABSPATH . 'wp-admin/includes/class-automatic-upgrader-skin.php';
+		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		require_once ABSPATH . 'wp-admin/includes/misc.php';
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/template.php';
+		require_once ABSPATH . 'wp-admin/includes/update.php';
+		wp_update_plugins();
 
-		@include_once ABSPATH . 'wp-admin/includes/plugin.php';
-		@include_once ABSPATH . 'wp-admin/includes/misc.php';
-		@include_once ABSPATH . 'wp-admin/includes/file.php';
-		@include_once ABSPATH . 'wp-admin/includes/template.php';
-		@wp_update_plugins();
-		$all_plugins = get_plugins();
-
-		// New array with all available plugins and the ones we want to upgrade.
 		$upgrade = [];
-		foreach ( $all_plugins as $path => $data ) {
-			$t = explode( '/', $path );
-			if ( in_array( $t[0], $plugins ) ) {
-				array_push( $upgrade, $path );
+		$matched = [];
+		foreach ( get_plugins() as $path => $data ) {
+			$parts = explode( '/', $path, 2 );
+			if ( in_array( $parts[0], $plugins, true ) ) {
+				$upgrade[] = $path;
+				$matched[] = $parts[0];
 			}
 		}
-
-		// Don't continue if we have no valid plugins to upgrade.
-		if ( count( $upgrade ) == 0 ) {
-			$this->returnResults( false, null, 'No valid plugin names have been given.' );
+		if ( ! $upgrade || array_diff( $plugins, $matched ) ) {
+			$this->returnResults( false, null, 'One or more requested plugins could not be found.' );
+		}
+		if ( $check_network_policy ) {
+			$approved = $this->network_grant();
+			if ( ! $approved ) {
+				$offers = get_site_transient( 'update_plugins' );
+				$updater = new WP_Automatic_Updater();
+				$approved = true;
+				foreach ( $upgrade as $path ) {
+					if ( ! isset( $offers->response[ $path ]->plugin ) || $offers->response[ $path ]->plugin !== $path
+						|| ! $updater->should_update( 'plugin', $offers->response[ $path ], WP_PLUGIN_DIR ) ) {
+						$approved = false;
+						break;
+					}
+				}
+			}
+			if ( ! $this->network_allows_action( $approved ) ) {
+				$this->returnResults( false, null, 'This plugin update requires authorization from the network administrator.' );
+			}
 		}
 
 		// Upgrade the plugins.
 		$skin     = new Automatic_Upgrader_Skin();
 		$upgrader = new Plugin_Upgrader( $skin );
 		$result   = $upgrader->bulk_upgrade( $upgrade, [ 'allow_relaxed_file_ownership' => true ] );
-		if ( ! $result ) {
-			$this->returnResults( false, null, 'The plugins could not be upgraded, most likely because of invalid filesystem connection information.' );
+		foreach ( $upgrade as $path ) {
+			if ( ! is_array( $result ) || empty( $result[ $path ] ) || is_wp_error( $result[ $path ] ) ) {
+				$this->returnResults( false, null, 'The plugin update did not complete for ' . $path . '.' );
+			}
 		}
 
 		// Synchronize again with the API.
@@ -381,16 +410,16 @@ class P_Listener extends P_Core {
 	 * @return string|void
 	 */
 	private function pluginsToggle() {
-		if (!isset( $_POST['patchstack_plugins'], $_POST['patchstack_plugins_toggle'] ) ) {
+		if (!isset( $this->signed_request['patchstack_plugins'], $this->signed_request['patchstack_plugins_toggle'] ) ) {
 			return;
 		}
 
 		@set_time_limit( 180 );
 
 		// Must have a valid number of plugins received to toggle.
-		$plugins = wp_filter_nohtml_kses( $_POST['patchstack_plugins'] );
+		$plugins = wp_filter_nohtml_kses( $this->signed_request['patchstack_plugins'] );
 		$plugins = explode( '|', $plugins );
-		$state = $_POST['patchstack_plugins_toggle'] == 'on' ? 'on' : 'off';
+		$state = $this->signed_request['patchstack_plugins_toggle'] == 'on' ? 'on' : 'off';
 		if ( count( $plugins ) == 0 ) {
 			$this->returnResults( false, null, 'No valid plugin names have been given.' );
 		}
@@ -426,7 +455,10 @@ class P_Listener extends P_Core {
 
 		// Turn the plugins on or off?
 		if ( $state == 'on' ) {
-			activate_plugins( $toggle );
+			$result = activate_plugins( $toggle );
+			if ( is_wp_error( $result ) ) {
+				$this->returnResults( false, null, 'One or more plugins could not be activated.' );
+			}
 		}
 
 		if ( $state == 'off' ) {
@@ -444,14 +476,14 @@ class P_Listener extends P_Core {
 	 * @return string|void
 	 */
 	private function pluginsDelete() {
-		if (!isset( $_POST['patchstack_plugins'] ) ) {
+		if (!isset( $this->signed_request['patchstack_plugins'] ) ) {
 			return;
 		}
 
 		@set_time_limit( 180 );
 
 		// Must have a valid number of plugins received to toggle.
-		$plugins = wp_filter_nohtml_kses( $_POST['patchstack_plugins'] );
+		$plugins = wp_filter_nohtml_kses( $this->signed_request['patchstack_plugins'] );
 		$plugins = explode( '|', $plugins );
 		if ( count( $plugins ) == 0 ) {
 			$this->returnResults( false, null, 'No valid plugin names have been given.' );
@@ -480,7 +512,10 @@ class P_Listener extends P_Core {
 		}
 
 		@deactivate_plugins( $delete );
-		@delete_plugins( $delete );
+		$result = delete_plugins( $delete );
+		if ( $result !== true ) {
+			$this->returnResults( false, null, 'One or more plugins could not be deleted.' );
+		}
 
 		// Synchronize again with the API.
 		do_action( 'patchstack_send_software_data' );
@@ -493,12 +528,12 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function saveOptions() {
-		if ( ! isset( $_POST['patchstack_set_options'], $_POST['patchstack_secret'] ) ) {
+		if ( ! isset( $this->signed_request['patchstack_set_options'] ) ) {
 			exit;
 		}
 
 		// Get the received options.
-		$options = json_decode( base64_decode( $_POST['patchstack_set_options'] ), true );
+		$options = json_decode( base64_decode( $this->signed_request['patchstack_set_options'] ), true );
 		if ( ! $options || count( $options ) == 0 ) {
 			exit;
 		}
@@ -536,7 +571,12 @@ class P_Listener extends P_Core {
 		$options  = $wpdb->get_results( "SELECT option_name, option_value FROM " . $wpdb->options . " WHERE option_name LIKE 'patchstack_%'" );
 		$settings = [];
 		$found = [];
+
+		// Internal lock rows are not part of the dashboard's options contract.
 		foreach ( $options as $option ) {
+			if ( preg_match( '/^patchstack_(replay_|2fa_lock_|login_[0-9a-f]{32}_lock$)/', $option->option_name ) ) {
+				continue;
+			}
 			array_push( $found, $option->option_name );
 			$settings[] = (array) $option;
 		}
@@ -624,12 +664,12 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function unbanFirewallIp() {
-		if ( ! isset( $_POST['patchstack_ip'] ) || !filter_var( $_POST['patchstack_ip'], FILTER_VALIDATE_IP ) ) {
+		if ( ! isset( $this->signed_request['patchstack_ip'] ) || !filter_var( $this->signed_request['patchstack_ip'], FILTER_VALIDATE_IP ) ) {
 			return;
 		}
 
 		global $wpdb;
-		$wpdb->query( $wpdb->prepare( 'UPDATE ' . $wpdb->prefix . 'patchstack_firewall_log SET apply_ban = 0 WHERE ip = %s', [ $_POST['patchstack_ip'] ] ) );
+		$wpdb->query( $wpdb->prepare( 'UPDATE ' . $wpdb->prefix . 'patchstack_firewall_log SET apply_ban = 0 WHERE ip = %s', [ $this->signed_request['patchstack_ip'] ] ) );
 		$this->returnResults( null, 'The IP has been unbanned.' );
 	}
 
@@ -682,24 +722,8 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function getLoginBans() {
-		// Calculate block time.
-		$minutes = (int) $this->get_option( 'patchstack_anti_bruteforce_minutes', 30 );
-		$timeout = (int) $this->get_option( 'patchstack_anti_bruteforce_blocktime', 60 );
-		if ( empty( $minutes ) || empty( $timeout ) ) {
-			$time = 30 + 60;
-		} else {
-			$time = $minutes + $timeout;
-		}
-
-		// Check if X failed login attempts were made.
 		global $wpdb;
-		$results = $wpdb->get_results(
-			$wpdb->prepare( 'SELECT id, ip, date FROM ' . $wpdb->prefix . "patchstack_event_log WHERE action = 'failed login' AND date >= ('" . current_time( 'mysql' ) . "' - INTERVAL %d MINUTE) GROUP BY ip HAVING COUNT(ip) >= %d ORDER BY date DESC", [ $time, $this->get_option( 'patchstack_anti_bruteforce_attempts', 10 ) ] ),
-			OBJECT
-		);
-
-		// Return the banned IP addresses.
-		wp_send_json( [ 'banned' => $results ] );
+		wp_send_json( [ 'banned' => $wpdb->get_results( $this->login_bans_query() ) ] );
 	}
 
 	/**
@@ -708,41 +732,26 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function unbanLogin() {
-		if ( ! isset( $_POST['id'], $_POST['type'] ) || ! is_scalar( $_POST['id'] ) || ! ctype_digit( (string) $_POST['id'] ) ) {
+		if ( ! isset( $this->signed_request['id'], $this->signed_request['type'] ) || ! is_scalar( $this->signed_request['id'] ) || ! ctype_digit( (string) $this->signed_request['id'] ) ) {
 			exit;
 		}
 
-		global $wpdb;
-
-		// Unblock the IP; delete the logs of the IP.
-		if ( $_POST['type'] == 'unblock' ) {
-			// First get the IP address to unblock.
-			$result = $wpdb->get_results(
-				$wpdb->prepare( 'SELECT ip FROM ' . $wpdb->prefix . 'patchstack_event_log WHERE id = %d', [ (int) $_POST['id'] ] )
-			);
-
-			// Unblock the IP address.
-			if ( isset( $result[0], $result[0]->ip ) && filter_var( $result[0]->ip, FILTER_VALIDATE_IP ) ) {
-				$wpdb->query(
-					$wpdb->prepare( 'DELETE FROM ' . $wpdb->prefix . 'patchstack_event_log WHERE ip = %s', [ $result[0]->ip ] )
-				);
-			}
+		if ( ! in_array( $this->signed_request['type'], [ 'unblock', 'unblock_whitelist' ], true ) ) {
+			return;
 		}
-
-		// Unblock and whitelist the IP.
-		if ( $_POST['type'] == 'unblock_whitelist' ) {
-			// First get the IP address to whitelist.
-			$result = $wpdb->get_results(
-				$wpdb->prepare( 'SELECT ip FROM ' . $wpdb->prefix . 'patchstack_event_log WHERE id = %d', [ (int) $_POST['id'] ] )
-			);
-
-			// Whitelist and unblock the IP address.
-			if ( isset( $result[0], $result[0]->ip ) && filter_var( $result[0]->ip, FILTER_VALIDATE_IP )  ) {
-				update_option( 'patchstack_login_whitelist', $this->get_option( 'patchstack_login_whitelist', '' ) . "\n" . $result[0]->ip );
-				$wpdb->query(
-					$wpdb->prepare( 'DELETE FROM ' . $wpdb->prefix . 'patchstack_event_log WHERE ip = %s', [ $result[0]->ip ] )
-				);
+		global $wpdb;
+		$table = $wpdb->prefix . 'patchstack_event_log';
+		$ip = $wpdb->get_var( $wpdb->prepare( "SELECT ip FROM $table WHERE id = %s AND action IN ('failed login', 'login ban')", $this->signed_request['id'] ) );
+		if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+			if ( $this->signed_request['type'] === 'unblock_whitelist' ) {
+				// An IPv6 ban covers the client's /64, so the whitelist entry has to as well.
+				$entry = strpos( $ip, ':' ) !== false && $this->login_limit_key( $ip ) === $ip ? $ip . '/64' : $ip;
+				update_option( 'patchstack_login_whitelist', $this->get_option( 'patchstack_login_whitelist', '' ) . "\n" . $entry );
 			}
+			if ( $wpdb->query( $wpdb->prepare( "DELETE FROM $table WHERE ip = %s AND (action IN ('login attempt', 'login ban') OR (action = 'failed login' AND (flag IS NULL OR flag <> 'patchstack:login-audit')))", $ip ) ) === false ) {
+				$this->returnResults( false, null, 'The login ban could not be removed.' );
+			}
+			delete_transient( 'patchstack_login_' . md5( $ip ) );
 		}
 
 		$this->returnResults( null, 'The unban has been processed.' );
@@ -754,8 +763,29 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function debugInfo() {
+		// $_SERVER also carries the host's environment and any credential a proxy forwards in a header,
+		// so only named request details are returned, plus the variables that hold nothing but addresses:
+		// those are how a proxy passes on the visitor's IP, whatever it calls the variable.
+		$known = [
+			'REMOTE_ADDR', 'REMOTE_PORT', 'SERVER_ADDR', 'SERVER_NAME', 'SERVER_PORT', 'SERVER_PROTOCOL', 'SERVER_SOFTWARE', 'REQUEST_METHOD', 'REQUEST_URI', 'REQUEST_SCHEME', 'REQUEST_TIME', 'HTTPS', 'GATEWAY_INTERFACE', 'SCRIPT_NAME', 'CONTENT_TYPE', 'CONTENT_LENGTH',
+			'HTTP_HOST', 'HTTP_USER_AGENT', 'HTTP_VIA', 'HTTP_FORWARDED', 'HTTP_X_FORWARDED_PROTO', 'HTTP_X_FORWARDED_HOST', 'HTTP_X_FORWARDED_PORT', 'HTTP_CF_RAY', 'HTTP_CF_IPCOUNTRY', 'HTTP_CDN_LOOP',
+		];
+		$server = [];
+		foreach ( $_SERVER as $key => $value ) {
+			if ( ! is_scalar( $value ) ) {
+				continue;
+			}
+			$addresses = array_filter( array_map( 'trim', explode( ',', (string) $value ) ), 'strlen' );
+			$only_addresses = $addresses && count( $addresses ) === count( array_filter( $addresses, function ( $address ) {
+				return filter_var( $address, FILTER_VALIDATE_IP ) !== false;
+			} ) );
+			if ( in_array( $key, $known, true ) || $only_addresses ) {
+				$server[ $key ] = $value;
+			}
+		}
+
 		$debug = [
-			'server' 	=> $_SERVER,
+			'server' 	=> $server,
 			'php' 		=> phpversion()
 		];
 
@@ -767,12 +797,15 @@ class P_Listener extends P_Core {
 	 * 
 	 * @return void
 	 */
-	private function setIpHeader() {
-		if ( ! isset( $_POST['ip'] ) ) {
+	private function setIpHeader( $params = null ) {
+		if ( $params === null ) {
+			$params = $this->signed_request;
+		}
+		if ( ! isset( $params['ip'] ) ) {
 			return;
 		}
 
-		$ips = ! is_array ( $_POST['ip'] ) ? [ $_POST['ip'] ] : $_POST['ip'];
+		$ips = ! is_array ( $params['ip'] ) ? [ $params['ip'] ] : $params['ip'];
 
 		// REMOTE_ADDR?
 		foreach ( $ips as $ip ) {
@@ -820,8 +853,7 @@ class P_Listener extends P_Core {
 	 */
 	private function refreshLicense () {
 		do_action( 'patchstack_update_license_status' );
-		do_action( 'patchstack_send_software_data' );
-		do_action( 'patchstack_post_dynamic_firewall_rules' );
+		do_action( 'patchstack_sync_software_and_rules' );
 		
 		wp_send_json( array( 'success' => true ) );
 	}
@@ -852,28 +884,45 @@ class P_Listener extends P_Core {
 	 * @return void
 	 */
 	private function resetTFA () {
-		global $wpdb;
-
-		// Delete by user id if specified.
-		$where = '';
-		$params = [];
-		if (isset($_POST['user_id'])) {
-			$where = 'AND user_id = %d';
-			$params = [$_POST['user_id']];
-		} elseif (isset($_POST['user_name'])) {
-			$where = 'AND user_id IN (SELECT ID FROM ' . $wpdb->users . ' WHERE user_login = %s OR user_email = %s)';
-			$params = [$_POST['user_name'], $_POST['user_name']];
+		$user_id = 0;
+		$all = ! array_key_exists( 'user_id', $this->signed_request ) && ! array_key_exists( 'user_name', $this->signed_request );
+		if ( isset( $this->signed_request['user_id'] ) && is_scalar( $this->signed_request['user_id'] ) && ctype_digit( (string) $this->signed_request['user_id'] ) ) {
+			$user_id = (int) $this->signed_request['user_id'];
+		} elseif ( isset( $this->signed_request['user_name'] ) && is_string( $this->signed_request['user_name'] ) ) {
+			$name = $this->signed_request['user_name'];
+			$user = get_user_by( 'login', $name );
+			if ( ! $user ) {
+				$user = get_user_by( 'email', $name );
+			}
+			$user_id = $user ? $user->ID : 0;
 		}
-
-		// Delete the 2FA data.
-		$wpdb->query(
-			$wpdb->prepare( "
-				DELETE FROM " . $wpdb->usermeta. "
-				WHERE `meta_key` IN ('webarx_2fa_enabled', 'webarx_2fa_secretkey', 'webarx_2fa_secretkey_nonce') 
-				" . $where,
-				$params
-			)
-		);
+		if ( ! $all && ( ! $user_id || ! get_userdata( $user_id ) ) ) {
+			$this->returnResults( false, null, 'The requested account could not be found.' );
+		}
+		if ( ! $all ) {
+			if ( ! $this->reset_user_2fa( $user_id ) ) {
+				$this->returnResults( false, null, 'The 2FA reset could not be completed. Please try again.' );
+			}
+		} else {
+			global $wpdb;
+			$last_id = 0;
+			$keys = [ 'webarx_2fa_enabled', 'webarx_2fa_secretkey', 'webarx_2fa_secretkey_nonce', 'patchstack_2fa_enabled', 'patchstack_2fa_secretkey', 'patchstack_2fa_secretkey_nonce', '_patchstack_2fa_state', '_patchstack_2fa_reset_pending' ];
+			do {
+				$ids = $wpdb->get_col( $wpdb->prepare(
+					"SELECT DISTINCT user_id FROM $wpdb->usermeta WHERE meta_key IN (" . implode( ', ', array_fill( 0, count( $keys ), '%s' ) ) . ') AND (meta_key <> %s OR meta_value <> %s) AND user_id > %d ORDER BY user_id LIMIT 100',
+					array_merge( $keys, [ 'patchstack_2fa_enabled', '0', $last_id ] )
+				) );
+				if ( $wpdb->last_error ) {
+					$this->returnResults( false, null, 'The 2FA reset could not be completed. Please try again.' );
+				}
+				foreach ( $ids as $id ) {
+					$last_id = (int) $id;
+					if ( ! $this->reset_user_2fa( $last_id ) ) {
+						$this->returnResults( false, null, 'The 2FA reset could not be completed. Please try again.' );
+					}
+				}
+			} while ( count( $ids ) === 100 );
+		}
 
 		wp_send_json( [ 'success' => true ] );
 	}

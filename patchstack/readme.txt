@@ -5,7 +5,7 @@ License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 Requires at least: 5.2
 Tested up to: 7.0
-Stable tag: 2.3.7
+Stable tag: 2.3.8
 Requires PHP: 5.6
 
 Patchstack automatically identifies and mitigates security vulnerabilities in WordPress plugins, themes, and core.
@@ -18,7 +18,7 @@ https://www.youtube.com/watch?v=z2nuYpg26Vc
 
 Patchstack is a security plugin for WordPress that finds WP core, plugin and theme vulnerabilities in your websites. 
 
-The free version includes up to 48-hour early warning for new vulnerabilities found by our security research community. It also allows you to automatically update vulnerable software, manage updates remotely, and get snapshot reports on your sites’ security status.
+The free version includes up to 48-hour early warning for new vulnerabilities found by our security research community. From the Patchstack App you can also update plugins, themes and WordPress core on your sites remotely, and generate snapshot PDF reports on your sites’ security status.
 
 The paid version includes automatic vulnerability protection. Patchstack deploys highly targeted rules on a per-site basis, only when a specific vulnerability is detected on a site.
 
@@ -50,9 +50,8 @@ Patchstack’s Personal plan is a free security service for WordPress that lets 
 * Detect the latest security vulnerabilities in WordPress themes.
 * Detect the latest security vulnerabilities in WordPress core.
 * Receive real-time alerts via email if any security vulnerabilities are found.
-* Manage core, plugin and theme updates from a single dashboard.
-* [Optional] Enable automatic updates for vulnerable plugins only.
-* Generate snapshot reports about the security status of your website.
+* Update core, plugins and themes remotely from a single dashboard ([how](https://docs.patchstack.com/patchstack-app/site-dashboard/site-software/)).
+* Generate snapshot PDF reports about the security status of your website ([how](https://docs.patchstack.com/patchstack-app/reports/snapshot-report/)).
 
 ### What features do Patchstack paid subscriptions have?
 Patchstack’s paid subscriptions include automatic protection for WordPress vulnerabilities, as well as other protection modules.
@@ -131,6 +130,16 @@ You also gain access to advanced hardening options, 2FA, CAPTCHA, security repor
 * Weekly/monthly PDF reports
 * Slack alerts
 * Unlimited [Patchstack App API usage](https://docs.patchstack.com/api-solutions/app-api/patchstack-app-api/)
+
+= Where do I update plugins and download snapshot reports? =
+Both are in the [Patchstack App](https://app.patchstack.com) and included in the Personal (Free) plan.  
+To update, open **Sites**, pick your site and go to its **Packages** tab. Click **Update** on a plugin or theme, or **Update all**. Back up your site first. See [Packages](https://docs.patchstack.com/patchstack-app/site-dashboard/site-software/).  
+For a snapshot report, open **Reports** (from the Reports heading on your Dashboard), choose your site, choose **Snapshot** as the type and click **Generate**. The PDF appears under **Available for download**. See [Snapshot report](https://docs.patchstack.com/patchstack-app/reports/snapshot-report/).
+
+= Can Patchstack update my plugins automatically? =
+No. Patchstack no longer offers automatic updates. Instead, Patchstack protection (paid plans, or $5 / site per month on the Personal plan) blocks attacks on known vulnerabilities with virtual patches (vPatches), without changing your site's code, and you choose when to update.  
+If you want automatic updates, use WordPress's own: on the **Plugins** screen, click **Enable auto-updates** next to a plugin.  
+If you switched on Patchstack's automatic updates before they were retired, they keep running until you turn them off: your site's **Packages** tab shows a note with a **Turn off auto-updates** link.
 
 = What checks does the Patchstack Personal (Free) plan perform? =
 No external checks are performed. The plugin matches the installed plugins, themes, and WordPress core on your site with our [vulnerability database](https://patchstack.com/database/) to identify vulnerable versions.

@@ -71,6 +71,22 @@ class Processor
     private $response;
 
     /**
+     * Whether the rule being evaluated can only block, log or redirect a request.
+     * A rule that lets a request through must not match more than it used to.
+     *
+     * @var bool
+     */
+    private $restrictive = true;
+
+    /**
+     * The last value that was not valid UTF-8 and its converted copy.
+     * Many rules test the same value, and converting a large one is the expensive part.
+     *
+     * @var array|null
+     */
+    private $convertedValue;
+
+    /**
      * Creates a new processor instance.
      *
      * @param ExtensionInterface $extension
@@ -129,8 +145,7 @@ class Processor
         }
 
         // Check for whitelist based on the legacy whitelist rules.
-        $request  = $this->request->capture();
-        if ($this->extension->isWhitelisted($this->whitelistRulesLegacy, $request)) {
+        if ($this->extension->isWhitelisted($this->whitelistRulesLegacy, $this->request->capture())) {
             return true;
         }
 
@@ -167,6 +182,7 @@ class Processor
             }
 
             // Execute the firewall rule.
+            $this->restrictive = !isset($rule['type']) || $rule['type'] != 'WHITELIST';
             $rule_hit = $this->executeFirewall($rule['rules']);
 
             // If the payload did not match the rule, continue on to the next rule.
@@ -202,7 +218,7 @@ class Processor
 
         // Run the legacy firewall rules processor for backwards compatibility.
         if (is_array($this->firewallRulesLegacy) && count($this->firewallRulesLegacy) > 0 && !$this->mustUsePluginCall && !$isWhitelisted) {
-            $this->launchLegacy(true, $request, $this->extension->getIpAddress());
+            $this->launchLegacy(true, [], $this->extension->getIpAddress());
         }
 
         return true;
@@ -396,7 +412,7 @@ class Processor
 
         // If a string matches a regular expression.
         if ($matchType == 'regex' && is_string($matchValue) && is_scalar($value)) {
-            return @preg_match($matchValue, @urldecode($value)) === 1;
+            return $this->matchRegex($matchValue, @urldecode($value));
         }
 
         // If the user does not have a WP privilege.
@@ -517,6 +533,42 @@ class Processor
     }
 
     /**
+     * Match a pattern against a value.
+     * 
+     * @param string $pattern
+     * @param string $value
+     * @return bool
+     */
+    private function matchRegex($pattern, $value)
+    {
+        $result = @preg_match($pattern, $value);
+        if ($result === false && $this->restrictive && preg_last_error() === PREG_BAD_UTF8_ERROR) {
+            if ($this->convertedValue === null || $this->convertedValue[0] !== $value) {
+                $this->convertedValue = [$value, $this->replaceInvalidUtf8($value)];
+            }
+            $result = @preg_match($pattern, $this->convertedValue[1]);
+        }
+
+        return $result === 1;
+    }
+
+    private function replaceInvalidUtf8($value)
+    {
+        $length = strlen($value);
+        $output = '';
+        for ($start = 0; $start < $length; $start = $end) {
+            // Bound the temporary HTML expansion and keep a UTF-8 character in one chunk.
+            $end = min($start + 8192, $length);
+            for ($i = 0; $i < 3 && $end < $length && (ord($value[$end]) & 0xC0) === 0x80; $i++) {
+                $end++;
+            }
+            $chunk = substr($value, $start, $end - $start);
+            $output .= htmlspecialchars_decode(htmlspecialchars($chunk, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8'), ENT_NOQUOTES);
+        }
+        return $output;
+    }
+
+    /**
      * Determine if the rules contain an action that should not be executed under the mu-plugins context.
      * 
      * @param array $rules
@@ -526,19 +578,16 @@ class Processor
     {
         $functions = ['current_user_cannot'];
 
-        if (isset($rules['rules'])) {
-            if ($this->hasWpAction($rules['rules'])) {
-                return true;
-            }
-        }
-
         foreach ($rules as $rule) {
-            if (!isset($rule['match'], $rule['match']['type'])) {
-                continue;
-            }
-
-            if (in_array($rule['match']['type'], $functions)) {
+            if (isset($rule['rules']) && is_array($rule['rules']) && $this->hasWpAction($rule['rules'])) {
                 return true;
+            }
+            $match = isset($rule['match']) ? $rule['match'] : null;
+            while (is_array($match)) {
+                if (isset($match['type']) && in_array($match['type'], $functions, true)) {
+                    return true;
+                }
+                $match = isset($match['match']) ? $match['match'] : null;
             }
         }
 
@@ -556,6 +605,9 @@ class Processor
      */
     public function launchLegacy($mustExit = true, $request = [], $ip = '')
     {
+        // Legacy rules only block, log or redirect.
+        $this->restrictive = true;
+
         // Obtain the IP address and request data if it has not been supplied yet.
         $client_ip = $ip == '' ? $this->extension->getIpAddress() : $ip;
         $requests  = count($request) == 0 ? $this->request->capture() : $request;
@@ -675,7 +727,7 @@ class Processor
                 }
             }
         } else {
-            return preg_match($rule, urldecode($request));
+            return $this->matchRegex($rule, urldecode($request));
         }
 
         return $is_matched;

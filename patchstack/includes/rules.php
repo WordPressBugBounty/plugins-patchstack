@@ -26,9 +26,10 @@ class P_Rules extends P_Core {
 	 * Pull the hardening .htaccess rules from the API.
 	 * Then apply it to the .htaccess file after we create a backup.
 	 *
+	 * @param boolean $settings_changed Whether a hardening setting was just changed on this site.
 	 * @return void
 	 */
-	public function post_firewall_rules() {
+	public function post_firewall_rules( $settings_changed = false ) {
 		if ( $this->get_option( 'patchstack_license_free', 0 ) == 1 ) {
 			return;
 		}
@@ -39,20 +40,33 @@ class P_Rules extends P_Core {
 		}
 
 		$rules    = $this->plugin->htaccess->get_firewall_rule_settings();
+
+		// The API rejects an empty selection, which would leave the rules of the option that
+		// was turned off last in place, so turning the last one off removes them here. Only a
+		// settings change asks for that: a scheduled refresh leaves an existing installation
+		// as it is, and so does a site whose options were never stored. A removal that could
+		// not be written stays pending, so later refreshes retry it until it succeeds.
+		if ( empty( $rules ) ) {
+			if ( $settings_changed === true && $this->plugin->htaccess->has_stored_rule_settings() ) {
+				update_site_option( 'patchstack_htaccess_removal_pending', 1 );
+			}
+			if ( get_site_option( 'patchstack_htaccess_removal_pending', 0 ) && $this->plugin->htaccess->remove_api_rules() ) {
+				delete_site_option( 'patchstack_htaccess_removal_pending' );
+			}
+			return;
+		}
+
+		// An option was turned back on before a pending removal went through.
+		if ( get_site_option( 'patchstack_htaccess_removal_pending', 0 ) ) {
+			delete_site_option( 'patchstack_htaccess_removal_pending' );
+		}
+
 		$settings = json_encode( $rules );
 		$results  = $this->plugin->api->post_firewall_rule( [ 'settings' => $settings ] );
 
-		// If no rules returned (empty, or a status code/null from a failed request),
-		// we assume all settings are turned off. Guard against assigning to a string
-		// offset, which is a fatal error on PHP 7.1+.
-		if ( ! is_array( $results ) ) {
-			$results = [ 'rules' => '' ];
-		}
-
-		// We have rules so apply it to the .htaccess file.
-		if ( isset( $results['rules'] ) ) {
+		// Only an explicit rules string may replace the installed hardening, including an empty one.
+		if ( is_array( $results ) && ! isset( $results['error'] ) && ! isset( $results['errors'] ) && isset( $results['rules'] ) && is_string( $results['rules'] ) ) {
 			$this->plugin->htaccess->write_to_htaccess( $results['rules'] );
-			return;
 		}
 	}
 
@@ -68,7 +82,7 @@ class P_Rules extends P_Core {
 
 		// Get the firewall and whitelist rules.
 		$results = $this->plugin->api->post_firewall_rule_json();
-		if ( ! isset( $results['firewall'] ) ) {
+		if ( ! is_array( $results ) || ! isset( $results['firewall'] ) || ! is_array( $results['firewall'] ) ) {
 			return;
 		}
 
@@ -83,6 +97,9 @@ class P_Rules extends P_Core {
 
 		// Parse the rules.
 		foreach ( $results['firewall'] as $rule ) {
+			if ( ! is_array( $rule ) || ( isset( $rule['rule_v2'] ) && ( ! isset( $rule['title'] ) || ! is_string( $rule['title'] ) ) ) ) {
+				return;
+			}
 			if ( isset( $rule['rule_v2'] ) ) {
 				$rule['rules'] = $rule['rule_v2'];
 				unset( $rule['rule_v2'] );
@@ -109,7 +126,10 @@ class P_Rules extends P_Core {
 		// Update firewall rules.
 		update_option( 'patchstack_firewall_rules', json_encode( $oldRules ), true );
 		update_option( 'patchstack_firewall_rules_v3', json_encode( $newRules ), true );
-		update_option( 'patchstack_firewall_rules_v3_ap', json_encode( $newRulesAP ), true );
+		if ( ! update_option( 'patchstack_firewall_rules_v3_ap', json_encode( $newRulesAP ), true ) && get_option( 'patchstack_firewall_ap_error', '' ) !== '' ) {
+			// Unchanged rules do not fire updated_option, but a failed config still needs a retry.
+			$this->plugin->activation->auto_prepend_injection( true );
+		}
 
 		// Update the counters.
 		update_option( 'patchstack_vpatches_present', $vPatchCount );
@@ -137,7 +157,7 @@ class P_Rules extends P_Core {
 		}
 
 		// Update the whitelisted keys.
-		if ( isset( $results['whitelist_keys'] ) ) {
+		if ( isset( $results['whitelist_keys'] ) && is_array( $results['whitelist_keys'] ) ) {
 			update_option( 'patchstack_whitelist_keys_rules', json_encode( $results['whitelist_keys'] ), true );
 		}
 	}

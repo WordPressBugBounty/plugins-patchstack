@@ -45,31 +45,7 @@ class P_Ban extends P_Core {
 	 * @return boolean Whether or not the user is blocked.
 	 */
 	public function is_ip_blocked( $ip ) {
-		$ip_rules = $this->get_option( 'patchstack_ip_block_list', '' );
-		if ( empty( $ip_rules ) ) {
-			return false;
-		}
-
-		$blocked  = false;
-		$ip_rules = explode( "\n", $ip_rules );
-		foreach ( $ip_rules as $blocked_ip ) {
-			$blocked_ip = trim( $blocked_ip );
-			if ( strpos( $blocked_ip, '*' ) !== false ) {
-				$blocked = $this->check_wildcard_rule( $ip, $blocked_ip );
-			} elseif ( strpos( $blocked_ip, '-' ) !== false ) {
-				$blocked = $this->check_range_rule( $ip, $blocked_ip );
-			} elseif ( strpos( $blocked_ip, '/' ) !== false ) {
-				$blocked = $this->check_subnet_mask_rule( $ip, $blocked_ip );
-			} elseif ( $ip == $blocked_ip ) {
-				return true;
-			}
-
-			if ( $blocked ) {
-				return true;
-			}
-		}
-
-		return $blocked;
+		return $this->matches_rules( $ip, $this->get_option( 'patchstack_ip_block_list', '' ) );
 	}
 
 	/**
@@ -79,30 +55,29 @@ class P_Ban extends P_Core {
 	 * @return boolean Whether or not the user is whitelisted.
 	 */
 	public function is_ip_whitelisted( $ip ) {
-		$ipRules = explode( "\n", $this->get_option( 'patchstack_login_whitelist', '' ) );
-		if ( empty( $ipRules ) ) {
-			return true;
-		}
+		return $this->matches_rules( $ip, $this->get_option( 'patchstack_login_whitelist', '' ) );
+	}
 
-		$whitelisted = false;
-		foreach ( $ipRules as $ipRule ) {
-			$ipRule = trim( $ipRule );
-			if ( strpos( $ipRule, '*' ) !== false ) {
-				$whitelisted = $this->check_wildcard_rule( $ip, $ipRule );
-			} elseif ( strpos( $ipRule, '-' ) !== false ) {
-				$whitelisted = $this->check_range_rule( $ip, $ipRule );
-			} elseif ( strpos( $ipRule, '/' ) !== false ) {
-				$whitelisted = $this->check_subnet_mask_rule( $ip, $ipRule );
-			} elseif ( $ip == $ipRule ) {
+	private function matches_rules( $ip, $rules ) {
+		if ( ! filter_var( $ip, FILTER_VALIDATE_IP ) || ! is_string( $rules ) || $rules === '' ) {
+			return false;
+		}
+		foreach ( explode( "\n", $rules ) as $rule ) {
+			$rule = trim( $rule );
+			if ( strpos( $rule, '*' ) !== false ) {
+				$match = $this->check_wildcard_rule( $ip, $rule );
+			} elseif ( strpos( $rule, '-' ) !== false ) {
+				$match = $this->check_range_rule( $ip, $rule );
+			} elseif ( strpos( $rule, '/' ) !== false ) {
+				$match = $this->check_subnet_mask_rule( $ip, $rule );
+			} else {
+				$match = inet_pton( $ip ) === @inet_pton( $rule );
+			}
+			if ( $match ) {
 				return true;
 			}
-
-			if ( $whitelisted ) {
-				return true;
-			}
 		}
-
-		return $whitelisted;
+		return false;
 	}
 
 	/**
@@ -113,20 +88,20 @@ class P_Ban extends P_Core {
 	 * @return boolean Whether or not the IP is in the range.
 	 */
 	public function check_subnet_mask_rule( $ip, $range ) {
-		list($range, $netmask) = explode( '/', $range, 2 );
-
-		// A malformed netmask (e.g. "1.2.3.4/abc") would throw a TypeError on the
-		// arithmetic below on PHP 8; treat anything outside 0-32 as a non-match.
-		if ( ! is_numeric( $netmask ) || $netmask < 0 || $netmask > 32 ) {
+		$parts = explode( '/', $range, 2 );
+		if ( count( $parts ) !== 2 || ! ctype_digit( $parts[1] ) ) {
 			return false;
 		}
-		$netmask = (int) $netmask;
-
-		$range_decimal         = ip2long( $range );
-		$ip_decimal            = ip2long( $ip );
-		$wildcard_decimal      = pow( 2, ( 32 - $netmask ) ) - 1;
-		$netmask_decimal       = ~ $wildcard_decimal;
-		return ( ( $ip_decimal & $netmask_decimal ) == ( $range_decimal & $netmask_decimal ) );
+		$network = @inet_pton( $parts[0] );
+		$address = @inet_pton( $ip );
+		$bits = (int) $parts[1];
+		if ( $network === false || $address === false || strlen( $network ) !== strlen( $address ) || $bits > strlen( $address ) * 8 ) {
+			return false;
+		}
+		$bytes = (int) ( $bits / 8 );
+		$remainder = $bits % 8;
+		return substr( $network, 0, $bytes ) === substr( $address, 0, $bytes )
+			&& ( ! $remainder || ( ord( $network[$bytes] ) >> ( 8 - $remainder ) ) === ( ord( $address[$bytes] ) >> ( 8 - $remainder ) ) );
 	}
 
 	/**
@@ -137,9 +112,8 @@ class P_Ban extends P_Core {
 	 * @return boolean Whether or not the IP is in the wilcard range.
 	 */
 	public function check_wildcard_rule( $ip, $rule ) {
-		$match = explode( '*', $rule );
-		$match = $match[0];
-		return ( substr( $ip, 0, strlen( $match ) ) == $match );
+		$pattern = str_replace( '\*', '[0-9a-f:.]*', preg_quote( $rule, '~' ) );
+		return filter_var( $ip, FILTER_VALIDATE_IP ) && preg_match( '~^' . $pattern . '$~iD', $ip ) === 1;
 	}
 
 	/**
@@ -150,18 +124,15 @@ class P_Ban extends P_Core {
 	 * @return boolean Whether or not the IP is in the range.
 	 */
 	public function check_range_rule( $ip, $rule ) {
-		// Check if client has multiple IPs
-		if ( is_array( $ip ) ) {
-			$ip = $ip[0];
+		$parts = explode( '-', $rule, 2 );
+		if ( count( $parts ) !== 2 ) {
+			return false;
 		}
-
-		$first_ip  = explode( '-', $rule );
-		$second_ip = explode( '-', $rule );
-
-		$start_ip   = ip2long( $first_ip[0] );
-		$end_ip     = ip2long( $second_ip[1] );
-		$request_ip = ip2long( $ip );
-
-		return ( $request_ip >= $start_ip && $request_ip <= $end_ip );
+		$start = @inet_pton( trim( $parts[0] ) );
+		$end = @inet_pton( trim( $parts[1] ) );
+		$address = @inet_pton( is_array( $ip ) ? reset( $ip ) : $ip );
+		return $start !== false && $end !== false && $address !== false
+			&& strlen( $start ) === strlen( $address ) && strlen( $end ) === strlen( $address )
+			&& strcmp( $address, $start ) >= 0 && strcmp( $address, $end ) <= 0;
 	}
 }

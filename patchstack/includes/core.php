@@ -181,6 +181,148 @@ class P_Core {
 		return false;
 	}
 
+	protected function ban_window_minutes( $minutes_option, $timeout_option ) {
+		$minutes = (int) $this->get_option( $minutes_option, 30 );
+		$timeout = (int) $this->get_option( $timeout_option, 60 );
+		return $minutes > 0 && $timeout > 0 ? $minutes + $timeout : 90;
+	}
+
+	// The dashboard and the authentication filter must agree on active bans, including pre-upgrade failures.
+	protected function login_bans_query( $ip = null ) {
+		global $wpdb;
+		$time = $this->ban_window_minutes( 'patchstack_anti_bruteforce_minutes', 'patchstack_anti_bruteforce_blocktime' );
+		$table = $wpdb->prefix . 'patchstack_event_log';
+		$sql = "SELECT MAX(id) AS id, ip, MAX(date) AS date FROM $table WHERE ";
+		$args = [];
+		if ( $ip !== null ) {
+			// Failures recorded before an upgrade carry the full address.
+			$ips = array_values( array_unique( [ $ip, $this->login_limit_key( $ip ) ] ) );
+			$sql .= 'ip IN (' . implode( ', ', array_fill( 0, count( $ips ), '%s' ) ) . ') AND ';
+			$args = $ips;
+		}
+		$sql .= "((action = 'failed login' AND (flag IS NULL OR flag <> 'patchstack:login-audit') AND date >= (%s - INTERVAL %d MINUTE))
+			OR (action = 'login ban' AND CAST(object_id AS UNSIGNED) > %d))
+			GROUP BY ip HAVING MAX(action = 'login ban') = 1 OR COUNT(*) >= %d ORDER BY date DESC";
+		return $wpdb->prepare( $sql, array_merge( $args, [ current_time( 'mysql' ), $time, time(), max( 1, (int) $this->get_option( 'patchstack_anti_bruteforce_attempts', 10 ) ) ] ) );
+	}
+
+	// An IPv6 subscriber controls a whole /64 and can use a fresh address for every attempt,
+	// so login limits count that network as one client. IPv4, also when mapped into IPv6, stays per address.
+	protected function login_limit_key( $ip ) {
+		$packed = is_string( $ip ) && filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ? @inet_pton( $ip ) : false;
+		if ( $packed === false || strlen( $packed ) !== 16 ) {
+			return $ip;
+		}
+		if ( substr( $packed, 0, 12 ) === "\0\0\0\0\0\0\0\0\0\0\xff\xff" ) {
+			return inet_ntop( substr( $packed, 12 ) );
+		}
+		return inet_ntop( substr( $packed, 0, 8 ) . "\0\0\0\0\0\0\0\0" );
+	}
+
+	protected function get_2fa_option( $user_id, $name ) {
+		// The enabled row commits the namespace only after both secret fields are saved.
+		if ( metadata_exists( 'user', $user_id, 'patchstack_2fa_enabled' ) ) {
+			return get_user_meta( $user_id, 'patchstack_2fa_' . $name, true );
+		}
+		return get_user_option( 'webarx_2fa_' . $name, $user_id );
+	}
+
+	protected function reset_user_2fa( $user_id ) {
+		$lock_name = 'patchstack_2fa_lock_' . (int) $user_id;
+		$lock = $this->acquire_lock( $lock_name, 30, true );
+		if ( ! $lock ) {
+			return false;
+		}
+		try {
+			wp_cache_delete( $user_id, 'user_meta' );
+			// Persist the retirement intent before disabling or deleting either namespace.
+			update_user_meta( $user_id, '_patchstack_2fa_reset_pending', 1 );
+			if ( ! get_user_meta( $user_id, '_patchstack_2fa_reset_pending', true ) ) {
+				return false;
+			}
+			update_user_meta( $user_id, 'patchstack_2fa_enabled', 0 );
+			if ( ! metadata_exists( 'user', $user_id, 'patchstack_2fa_enabled' ) || $this->get_2fa_option( $user_id, 'enabled' ) ) {
+				return false;
+			}
+			return $this->retire_2fa_secret( $user_id );
+		} finally {
+			$this->release_lock( $lock_name, $lock, true );
+		}
+	}
+
+	protected function retire_2fa_secret( $user_id ) {
+		$keys = [ 'webarx_2fa_enabled', 'webarx_2fa_secretkey', 'webarx_2fa_secretkey_nonce', 'patchstack_2fa_secretkey', 'patchstack_2fa_secretkey_nonce', '_patchstack_2fa_state' ];
+		foreach ( $keys as $key ) {
+			delete_user_meta( $user_id, $key );
+		}
+		foreach ( $keys as $key ) {
+			if ( metadata_exists( 'user', $user_id, $key ) ) {
+				return false;
+			}
+		}
+		delete_user_meta( $user_id, '_patchstack_2fa_reset_pending' );
+		return ! get_user_meta( $user_id, '_patchstack_2fa_reset_pending', true );
+	}
+
+	// WordPress option helpers cannot atomically take over a stale lease or release only its owner.
+	protected function acquire_lock( $name, $seconds = 300, $global = false ) {
+		global $wpdb;
+		$table = $global ? $wpdb->base_prefix . 'options' : $wpdb->options;
+		$table = '`' . str_replace( '`', '``', $table ) . '`';
+		$token = ( time() + $seconds ) . ':' . wp_generate_uuid4();
+		$inserted = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO $table (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, $token ) );
+		if ( $inserted !== 1 ) {
+			if ( $inserted === false ) {
+				return false;
+			}
+			// Releases before 2.3.7 stored an idle processing flag as an empty string, which get_var() reports as null.
+			$row = $wpdb->get_row( $wpdb->prepare( "SELECT option_value FROM $table WHERE option_name = %s", $name ) );
+			if ( ! $row || (int) $row->option_value > time() ) {
+				return false;
+			}
+			$previous = $row->option_value;
+			if ( $wpdb->query( $wpdb->prepare( "UPDATE $table SET option_value = %s, autoload = 'no' WHERE option_name = %s AND option_value = %s", $token, $name, $previous ) ) !== 1 ) {
+				return false;
+			}
+			// Boolean processing flags may still be present in WordPress's autoload cache.
+			if ( ! $global && in_array( $previous, [ '', '0', '1' ], true ) ) {
+				wp_cache_delete( 'alloptions', 'options' );
+			}
+		}
+		if ( ! $global ) {
+			wp_cache_delete( $name, 'options' );
+			wp_cache_delete( 'notoptions', 'options' );
+		}
+		return $token;
+	}
+
+	protected function release_lock( $name, $token, $global = false ) {
+		global $wpdb;
+		$table = $global ? $wpdb->base_prefix . 'options' : $wpdb->options;
+		$table = '`' . str_replace( '`', '``', $table ) . '`';
+		// An expired owner must never release its successor's lease.
+		$wpdb->query( $wpdb->prepare( "DELETE FROM $table WHERE option_name = %s AND option_value = %s", $name, $token ) );
+		if ( ! $global ) {
+			wp_cache_delete( $name, 'options' );
+		}
+	}
+
+	/**
+	 * Load the log redactor without risking a fatal error when an incomplete update left
+	 * the autoloader or the class file missing.
+	 *
+	 * @return bool
+	 */
+	public function log_redactor_available() {
+		$autoload = __DIR__ . '/../lib/patchstack/vendor/autoload.php';
+		if ( ! file_exists( $autoload ) ) {
+			return false;
+		}
+
+		require_once $autoload;
+		return class_exists( 'Patchstack\LogRedactor', true );
+	}
+
 	/**
 	 * Determine if the plugin is connected to the API.
 	 * 
@@ -272,6 +414,34 @@ class P_Core {
 	 *
 	 * @return string
 	 */
+	/**
+	 * Make a request value fit a text column of the log tables. WordPress refuses the whole
+	 * row when a value is longer than its column or is not valid text for the table, and a
+	 * blocked request must still be recorded.
+	 *
+	 * @param mixed $value
+	 * @param integer $bytes
+	 * @return string
+	 */
+	public function log_field( $value, $bytes = 255 ) {
+		$value = is_scalar( $value ) ? (string) $value : '';
+		if ( $value === '' ) {
+			return '';
+		}
+
+		// Invalid UTF-8 and characters outside the basic plane (which a utf8 table cannot hold) become "?".
+		if ( @preg_match( '//u', $value ) !== 1 ) {
+			$value = function_exists( 'mb_convert_encoding' ) ? mb_convert_encoding( $value, 'UTF-8', 'UTF-8' ) : preg_replace( '/[^\x20-\x7e]/', '?', $value );
+		}
+		$clean = @preg_replace( '/[\x{10000}-\x{10FFFF}]/u', '?', $value );
+		$value = is_string( $clean ) ? $clean : preg_replace( '/[^\x20-\x7e]/', '?', $value );
+
+		if ( strlen( $value ) > $bytes ) {
+			$value = function_exists( 'mb_strcut' ) ? mb_strcut( $value, 0, $bytes, 'UTF-8' ) : substr( preg_replace( '/[^\x20-\x7e]/', '?', $value ), 0, $bytes );
+		}
+		return $value;
+	}
+
 	public function get_ip() {
 		$override = get_option( 'patchstack_firewall_ip_header', '' );
 		if ( $override != '' && isset( $_SERVER[ $override ] ) ) {

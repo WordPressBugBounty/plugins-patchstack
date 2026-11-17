@@ -35,33 +35,38 @@ class P_Hide_Login extends P_Core {
 
 		// Register the filters and actions for the functionality.
 		add_action( 'init', [ $this, 'init' ], ~PHP_INT_MAX + 1 );
+		add_action( 'login_init', [ $this, 'guard_login' ], ~PHP_INT_MAX + 1 );
 		add_action( 'wp_logout', [ $this, 'wp_logout' ] );
 	}
 
 	/**
-	 * Deny access to wp-login.php if the login page rename feature is enabled.
+	 * Route custom login visits while leaving WordPress login actions intact.
 	 *
 	 * @return void
 	 */
 	public function init() {
-		// Do not block the user if they are already logged in as that would block a logout.
-		if ( is_user_logged_in() ) {
+		$logged_in = is_user_logged_in();
+		if ( $logged_in && is_admin() ) {
 			return;
 		}
 
-		// Determine if the user is whitelisted.
-		if ( ( ( isset( $_SERVER['REQUEST_URI'] ) && stripos( $_SERVER['REQUEST_URI'], 'wp-login.php' ) !== false ) || ( isset( $GLOBALS['pagenow'] ) && $GLOBALS['pagenow'] === 'wp-login.php' ) || ( isset( $_SERVER['PHP_SELF'] ) && $_SERVER['PHP_SELF'] === '/wp-login.php' ) ) && ! $this->is_whitelisted() ) {
-			if ( isset( $_REQUEST['action'] ) && in_array( $_REQUEST['action'], ['confirm_admin_email', 'postpass', 'lostpassword', 'retrievepassword', 'resetpass', 'rp', 'register', 'checkemail', 'confirmaction'] ) ) {
-				return;
-			}
-
-			$this->plugin->firewall_base->display_error_page( 'login' );
+		if ( isset( $GLOBALS['pagenow'] ) && $GLOBALS['pagenow'] === 'wp-login.php' ) {
+			return;
 		}
 
-		// If the current page is the renamed login page we give the user access for 10 minutes to the login page.
-		if ( isset( $_SERVER['REQUEST_URI'] ) && strpos( $_SERVER['REQUEST_URI'], get_option( 'patchstack_rename_wp_login' ) ) !== false ) {
-			// Whitelist the current IP address.
-			$this->whitelist_ip();
+		// Guests visiting the custom URL receive ten minutes of access to the login page.
+		$slug = get_option( 'patchstack_rename_wp_login' );
+		if ( isset( $_SERVER['REQUEST_URI'] ) && strpos( $_SERVER['REQUEST_URI'], $slug ) !== false ) {
+			if ( $logged_in ) {
+				$path = untrailingslashit( (string) wp_parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ) );
+				$login_path = untrailingslashit( (string) wp_parse_url( home_url( '/' . $slug ), PHP_URL_PATH ) );
+				$core_login_path = untrailingslashit( (string) wp_parse_url( site_url( '/' . $slug ), PHP_URL_PATH ) );
+				if ( $path !== $login_path && $path !== $core_login_path ) {
+					return;
+				}
+			} else {
+				$this->whitelist_ip();
+			}
 
 			// Supported by a number of popular caching plugins.
 			if ( ! defined( 'DONOTCACHEPAGE' ) ) {
@@ -77,9 +82,17 @@ class P_Hide_Login extends P_Core {
 			send_nosniff_header();
 			nocache_headers();
 
-			// User should be whitelisted now, redirect to the login page.
-			wp_safe_redirect( 'wp-login.php', 307 );
+			wp_safe_redirect( $logged_in ? admin_url() : site_url( 'wp-login.php', 'login' ), $logged_in ? 302 : 307 );
 			exit;
+		}
+	}
+
+	public function guard_login() {
+		// wp-login.php normalizes unsupported actions to login before firing login_init.
+		global $action;
+		if ( ! is_user_logged_in() && ! $this->is_whitelisted()
+			&& ! in_array( $action, [ 'confirm_admin_email', 'postpass', 'lostpassword', 'retrievepassword', 'resetpass', 'rp', 'register', 'checkemail', 'confirmaction' ], true ) ) {
+			$this->plugin->firewall_base->display_error_page( 'login' );
 		}
 	}
 
@@ -99,7 +112,7 @@ class P_Hide_Login extends P_Core {
 	 */
 	private function is_whitelisted() {
 		// Process the whitelist, and remove old ones.
-		$whitelist = get_site_option( 'patchstack_rename_wp_login_whitelist', [] );
+		$whitelist = get_option( 'patchstack_rename_wp_login_whitelist', [] );
 		$new_whitelist = [];
 		$allow = false;
 
@@ -119,7 +132,7 @@ class P_Hide_Login extends P_Core {
 				}
 			}
 
-			update_site_option( 'patchstack_rename_wp_login_whitelist', $new_whitelist );
+			update_option( 'patchstack_rename_wp_login_whitelist', $new_whitelist );
 		}
 
 		return $allow;
@@ -131,7 +144,7 @@ class P_Hide_Login extends P_Core {
 	 * @return void
 	 */
 	private function whitelist_ip() {
-		$whitelist = get_site_option( 'patchstack_rename_wp_login_whitelist', [] );
+		$whitelist = get_option( 'patchstack_rename_wp_login_whitelist', [] );
 		$new_whitelist = [];
 
 		// If the IP address is already whitelisted, reset the timestamp.
@@ -153,9 +166,9 @@ class P_Hide_Login extends P_Core {
 				$new_whitelist[] = [ $ip, time() ];
 			}
 
-			update_site_option( 'patchstack_rename_wp_login_whitelist', $new_whitelist );
+			update_option( 'patchstack_rename_wp_login_whitelist', $new_whitelist );
 		} else {
-			update_site_option( 'patchstack_rename_wp_login_whitelist', [ [ $this->get_ip(), time() ] ] );
+			update_option( 'patchstack_rename_wp_login_whitelist', [ [ $this->get_ip(), time() ] ] );
 		}
 	}
 }

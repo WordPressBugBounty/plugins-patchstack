@@ -86,12 +86,12 @@ class Patchstack_Network_Sites_Table extends WP_List_Table {
 	private function table_data() {
 		global $wpdb;
 		$data = [];
-		$free = get_option( 'patchstack_license_free', 0 ) == 1;
 		$nonce = wp_create_nonce( 'patchstack-migration' );
 
-		$blogs_ids = function_exists( 'get_sites' ) ? get_sites() : [];
+		$blogs_ids = function_exists( 'get_sites' ) ? get_sites( [ 'number' => 0, 'network_id' => get_current_network_id() ] ) : [];
 		foreach ( $blogs_ids as $b ) {
 			$site_info = get_blog_details( $b->blog_id );
+			$free = get_blog_option( $b->blog_id, 'patchstack_license_free', 0 ) == 1;
 
 			// Search functionality
 			$match = false;

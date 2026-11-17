@@ -122,6 +122,11 @@ class P_Event_Options extends P_Event_Log {
 				'sidebars_widgets',
 			]
 		) ) {
+			// The log is uploaded, so a credential is recorded as changed without its value.
+			if ( $option === 'mailserver_pass' ) {
+				$old_value = $new_value = '[redacted]';
+			}
+
 			$this->insert(
 				[
 					'action'      => 'updated',

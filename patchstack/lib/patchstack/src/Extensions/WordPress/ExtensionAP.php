@@ -3,6 +3,7 @@
 namespace Patchstack\Extensions\WordPress;
 
 use Patchstack\Extensions\ExtensionInterface;
+use Patchstack\LogRedactor;
 
 class ExtensionAP implements ExtensionInterface
 {
@@ -12,7 +13,8 @@ class ExtensionAP implements ExtensionInterface
      * @var array
      */
     public $options = [
-        'patchstack_firewall_ip_header' => 'REMOTE_ADDR'
+        'patchstack_firewall_ip_header' => 'REMOTE_ADDR',
+        'patchstack_log_redaction' => 0
     ];
 
     /**
@@ -57,16 +59,58 @@ class ExtensionAP implements ExtensionInterface
             return;
         }
 
-        @file_put_contents(PS_LOGS . 'logs.php', base64_encode(json_encode([
-            'ip'          => $this->getIpAddress(),
-            'request_uri' => isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '',
-            'user_agent'  => isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '',
-            'method'      => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '',
+        // The site imports this file every 15 minutes. Stop adding to it at 5 MiB, so a site
+        // whose import does not run cannot have its disk filled by blocked requests.
+        clearstatcache(true, PS_LOGS . 'logs.php');
+        if (@filesize(PS_LOGS . 'logs.php') > 5 * 1024 * 1024) {
+            return;
+        }
+
+        $requestUri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+        $postData = json_encode($request);
+        if (!empty($this->options['patchstack_log_redaction'])) {
+            // Skip the entry rather than store the raw request if the redactor is missing (incomplete update).
+            if (!class_exists('Patchstack\LogRedactor')) {
+                return;
+            }
+
+            $requestUri = LogRedactor::uri($requestUri);
+            $postData = LogRedactor::PAYLOAD;
+        }
+
+        // A value that is not valid UTF-8 cannot be encoded, and the block would not be recorded.
+        $entry = json_encode([
+            'ip'          => $this->logText($this->getIpAddress()),
+            'request_uri' => $this->logText($requestUri),
+            'user_agent'  => $this->logText(isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : ''),
+            'method'      => $this->logText(isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : ''),
             'fid'         => '55' . $ruleId,
-            'post_data'   => json_encode($request),
+            'post_data'   => is_string($postData) ? $postData : '',
             'site_id'     => $this->options['site_id'],
-            'log_date'    => date('Y-m-d H:i:s')
-        ])) . PHP_EOL, FILE_APPEND | LOCK_EX);
+            'log_date'    => date('Y-m-d H:i:s'),
+            // log_date is in the server's timezone, which the importer cannot know.
+            'time'        => time()
+        ]);
+        if (!is_string($entry)) {
+            return;
+        }
+
+        @file_put_contents(PS_LOGS . 'logs.php', base64_encode($entry) . PHP_EOL, FILE_APPEND | LOCK_EX);
+    }
+
+    /**
+     * Replace the bytes of a request value that are not valid UTF-8.
+     *
+     * @param  mixed $value
+     * @return string
+     */
+    private function logText($value)
+    {
+        $value = is_scalar($value) ? (string) $value : '';
+        if ($value !== '' && @preg_match('//u', $value) !== 1) {
+            $value = function_exists('mb_convert_encoding') ? mb_convert_encoding($value, 'UTF-8', 'UTF-8') : preg_replace('/[^\x20-\x7e]/', '?', $value);
+        }
+        return (string) $value;
     }
 
     /**

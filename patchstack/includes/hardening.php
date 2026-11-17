@@ -11,6 +11,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 class P_Hardening extends P_Core {
 
 	/**
+	 * Whether libcurl has to be kept from decoding response bodies, once determined.
+	 *
+	 * @var boolean|null
+	 */
+	private $curl_decoding_exposed = null;
+
+	/**
+	 * Whether the request libcurl is sending has a response size limit and asked for no compression.
+	 *
+	 * @var boolean
+	 */
+	private $curl_response_limited = false;
+
+	/**
 	 * Add the actions required for the hardening of the site.
 	 *
 	 * @param Patchstack $core
@@ -46,19 +60,32 @@ class P_Hardening extends P_Core {
 			add_filter( 'wp_is_application_passwords_available', '__return_false' );
 		}
 
-		// Block unauthorized XML-RPC requests?
+		// Turn XML-RPC off? The xmlrpc_enabled filter only covers the methods that log in,
+		// so pingbacks and the other anonymous methods have to be unregistered as well.
 		if ( $this->get_option( 'patchstack_xmlrpc_is_disabled', false ) == true ) {
 			add_filter( 'xmlrpc_enabled', '__return_false' );
+			add_filter( 'xmlrpc_methods', [ $this, 'remove_xmlrpc_methods' ], PHP_INT_MAX );
+			add_filter( 'wp_headers', [ $this, 'remove_pingback_header' ], PHP_INT_MAX );
+			add_action( 'wp', [ $this, 'remove_pingback_header' ], PHP_INT_MAX, 0 );
+			remove_action( 'wp_head', 'rsd_link' );
 		}
+
+		// Keep libcurl from unpacking response bodies while its Brotli decoder is exposed.
+		// This changes every outbound request, so it only applies once the site opts in.
+		add_action( 'http_api_curl', [ $this, 'disable_curl_decoding' ], PHP_INT_MAX, 2 );
+		add_action( 'requests-curl.after_request', [ $this, 'refuse_unrequested_encoding' ], 10, 1 );
 
 		// Block unauthorized wp-json requests?
 		if ( $this->get_option( 'patchstack_json_is_disabled', false ) ) {
-			add_filter( 'rest_authentication_errors', [ $this, 'disable_wpjson' ] );
+			add_filter( 'rest_pre_dispatch', [ $this, 'disable_wpjson' ], 10, 3 );
 		}
 
 		// Prevent user enumeration?
 		if ( $this->get_option( 'patchstack_userenum' ) ) {
 			add_action( 'init', [ $this, 'stop_user_enum' ], 1 );
+			add_action( 'parse_request', [ $this, 'stop_user_enum_query' ] );
+			add_filter( 'wp_sitemaps_add_provider', [ $this, 'remove_users_sitemap' ], 10, 2 );
+			add_filter( 'rest_pre_dispatch', [ $this, 'restrict_rest_users' ], 10, 3 );
 		}
 
 		// Attempt to hide the WordPress version?
@@ -88,7 +115,7 @@ class P_Hardening extends P_Core {
 	public function update_vulnerable_plugins() {
 		// Is the auto update setting for vulnerable plugins enabled?
 		$update = get_site_option( 'patchstack_auto_update', [] );
-		if ( ! is_array( $update ) || ! in_array( 'vulnerable', $update ) ) {
+		if ( ! is_array( $update ) || ! in_array( 'vulnerable', $update, true ) || ! wp_is_file_mod_allowed( 'automatic_updater' ) ) {
 			return;
 		}
 
@@ -110,6 +137,10 @@ class P_Hardening extends P_Core {
 		@include_once ABSPATH . 'wp-admin/includes/plugin.php';
 		@include_once ABSPATH . 'wp-admin/includes/misc.php';
 		@include_once ABSPATH . 'wp-admin/includes/file.php';
+		if ( ( new WP_Automatic_Updater() )->is_disabled() ) {
+			return;
+		}
+
 		@wp_update_plugins();
 		$all_plugins = get_plugins();
 
@@ -123,10 +154,22 @@ class P_Hardening extends P_Core {
 
 		// Upgrade the plugins.
 		$upgrader = new Plugin_Upgrader( new Automatic_Upgrader_Skin() );
-		$upgrader->bulk_upgrade( $upgrade );
+		$results = $upgrader->bulk_upgrade( $upgrade );
 
-		// Reset the option that holds the vulnerable plugins.
-		update_site_option( 'patchstack_vulnerable_plugins', [] );
+		$completed = [];
+		foreach ( $plugins as $path ) {
+			if ( is_string( $path ) && ( ! isset( $all_plugins[$path] ) || ( is_array( $results ) && ! empty( $results[$path] ) && ! is_wp_error( $results[$path] ) ) ) ) {
+				$completed[] = $path;
+			}
+		}
+		// Retain failed updates and work queued by callbacks during the attempt.
+		$pending = get_site_option( 'patchstack_vulnerable_plugins', [] );
+		if ( is_array( $pending ) ) {
+			$pending = array_values( array_filter( $pending, function ( $path ) use ( $completed ) {
+				return ! in_array( $path, $completed, true );
+			} ) );
+			update_site_option( 'patchstack_vulnerable_plugins', $pending );
+		}
 
 		// Resend the sofware data to the API.
 		do_action( 'patchstack_send_software_data' );
@@ -137,21 +180,21 @@ class P_Hardening extends P_Core {
 	 *
 	 * @return void|WP_Error
 	 */
-	public function disable_wpjson() {
-		// Some default exceptions.
-		$path = isset( $_SERVER['REQUEST_URI'] ) ? (string) parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ) : '';
-		$whitelists = [ '/wp-json/contact-form-7/' ];
-		foreach ( $whitelists as $whitelist ) {
-			if ( stripos( $path, $whitelist ) !== false ) {
-				return;
-			}
+	public function disable_wpjson( $result, $server, $request ) {
+		if ( ! defined( 'REST_REQUEST' ) || ! REST_REQUEST || is_wp_error( $result ) || is_user_logged_in()
+			|| stripos( $request->get_route(), '/contact-form-7/' ) === 0 ) {
+			return $result;
 		}
+		$msg = apply_filters( 'disable_wp_rest_api_error', esc_attr__( 'The WP REST API cannot be accessed by unauthorized users.', 'disable-wp-rest-api' ) );
+		return new WP_Error( 'rest_authorization_required', $msg, [ 'status' => rest_authorization_required_code() ] );
+	}
 
-		// Block unauthorized users.
-		if ( ! is_user_logged_in() ) {
-			$msg = apply_filters( 'disable_wp_rest_api_error', esc_attr__( 'The WP REST API cannot be accessed by unauthorized users.', 'disable-wp-rest-api' ) );
-			return new WP_Error( 'rest_authorization_required', $msg, [ 'status' => rest_authorization_required_code() ] );
+	public function restrict_rest_users( $result, $server, $request ) {
+		if ( defined( 'REST_REQUEST' ) && REST_REQUEST && ! is_wp_error( $result ) && ! is_user_logged_in()
+			&& preg_match( '~^/wp/v2/users(?:/|$)~i', $request->get_route() ) ) {
+			return new WP_Error( 'rest_authorization_required', esc_attr__( 'Authentication required.', 'patchstack' ), [ 'status' => 401 ] );
 		}
+		return $result;
 	}
 
 	/**
@@ -188,6 +231,129 @@ class P_Hardening extends P_Core {
 		}
 
 		return $comment_data;
+	}
+
+	/**
+	 * Unregister the XML-RPC methods of WordPress itself, pingbacks included.
+	 *
+	 * @param array $methods
+	 * @return array
+	 */
+	public function remove_xmlrpc_methods( $methods ) {
+		$kept = [];
+		foreach ( (array) $methods as $name => $callback ) {
+			// WordPress registers its own methods as "this:" callbacks. Methods another plugin
+			// registered carry their own authentication, such as a signed request, and stay.
+			$core = ( is_string( $callback ) && strpos( $callback, 'this:' ) === 0 ) || preg_match( '/^(?:wp|blogger|metaWeblog|mt|pingback|demo)\./i', $name );
+			if ( ! $core ) {
+				$kept[$name] = $callback;
+			}
+		}
+
+		$allowed = apply_filters( 'patchstack_xmlrpc_allowed_methods', $kept, $methods );
+		return is_array( $allowed ) ? $allowed : [];
+	}
+
+	/**
+	 * Stop advertising the pingback endpoint while XML-RPC is turned off. WordPress 6.1 and
+	 * later pass the header through the wp_headers filter; older releases send it directly
+	 * once the post is known, so it is also withdrawn on the wp action.
+	 *
+	 * @param array|null $headers
+	 * @return array|null
+	 */
+	public function remove_pingback_header( $headers = null ) {
+		if ( is_array( $headers ) ) {
+			unset( $headers['X-Pingback'] );
+		} elseif ( ! headers_sent() ) {
+			header_remove( 'X-Pingback' );
+		}
+		return $headers;
+	}
+
+	/**
+	 * CVE-2026-111497 is a memory corruption in the Brotli decoder that libcurl uses to unpack
+	 * response bodies, so any server WordPress fetches from can trigger it. libcurl is taken
+	 * out of the decoding altogether on sites that switched the patchstack_disable_curl_decoding
+	 * setting on. WordPress unpacks gzip itself, so ordinary requests still
+	 * ask for it; a response that is streamed to a file or cut off at a size limit cannot be
+	 * unpacked afterwards and is requested uncompressed.
+	 *
+	 * @param resource|CurlHandle $handle
+	 * @param array $request
+	 * @return void
+	 */
+	public function disable_curl_decoding( $handle, $request = [] ) {
+		$this->curl_response_limited = false;
+		if ( $this->curl_decoding_exposed === null ) {
+			$enabled = $this->get_option( 'patchstack_disable_curl_decoding', 0 ) && $this->has_exposed_brotli();
+			$this->curl_decoding_exposed = (bool) apply_filters( 'patchstack_disable_curl_decoding', $enabled );
+		}
+
+		if ( $this->curl_decoding_exposed && defined( 'CURLOPT_HTTP_CONTENT_DECODING' ) ) {
+			$buffered = is_array( $request ) && empty( $request['stream'] ) && empty( $request['filename'] ) && ! isset( $request['limit_response_size'] )
+				&& ( ! isset( $request['decompress'] ) || $request['decompress'] ) && function_exists( 'gzdecode' );
+			curl_setopt( $handle, CURLOPT_ENCODING, $buffered ? 'gzip' : 'identity' );
+			curl_setopt( $handle, CURLOPT_HTTP_CONTENT_DECODING, 0 );
+			$this->curl_response_limited = is_array( $request ) && isset( $request['limit_response_size'] );
+		}
+	}
+
+	/**
+	 * A size limit counts the bytes libcurl hands over, which are no longer unpacked. A server
+	 * that compresses a size-limited response although it was asked not to would have its body
+	 * unpacked after the limit was applied, to far more than the limit. Its Content-Encoding
+	 * header is dropped here, so the body stays as received and within the limit.
+	 *
+	 * @param string $response The raw response headers, followed by the body.
+	 * @return void
+	 */
+	public function refuse_unrequested_encoding( &$response ) {
+		if ( ! $this->curl_response_limited || ! is_string( $response ) ) {
+			return;
+		}
+
+		$this->curl_response_limited = false;
+		$end = strpos( $response, "\r\n\r\n" );
+		$headers = $end === false ? $response : substr( $response, 0, $end );
+		$kept = preg_replace( '/\r?\nContent-Encoding[ \t]*:[^\r\n]*/i', '', $headers );
+		if ( is_string( $kept ) && $kept !== $headers ) {
+			$response = $kept . ( $end === false ? '' : substr( $response, $end ) );
+		}
+	}
+
+	/**
+	 * Whether libcurl was built with a Brotli release from 1.0.3 up to the fixes in 1.0.10,
+	 * 1.1.1 and 1.2.1. A build that does not report its Brotli version counts as exposed.
+	 * Distributions that backport the fix keep the old version number, so a patched server
+	 * can still be reported here; the cost is limited to the change described above.
+	 *
+	 * @return boolean
+	 */
+	private function has_exposed_brotli() {
+		$curl = function_exists( 'curl_version' ) ? curl_version() : false;
+		// 1 << 23 is CURL_VERSION_BROTLI, which PHP only defines from 7.3.
+		if ( ! is_array( $curl ) || ! isset( $curl['features'] ) || ! ( $curl['features'] & 8388608 ) ) {
+			return false;
+		}
+
+		return $this->is_exposed_brotli_version( isset( $curl['brotli_version'] ) ? $curl['brotli_version'] : '' );
+	}
+
+	/**
+	 * @param string $reported The version as libcurl reports it, such as "1.0.9" or "brotli/1.1.0".
+	 * @return boolean
+	 */
+	private function is_exposed_brotli_version( $reported ) {
+		if ( ! is_string( $reported ) || ! preg_match( '/(\d+)\.(\d+)\.(\d+)/', $reported, $v ) ) {
+			return true;
+		}
+
+		$version = $v[1] . '.' . $v[2] . '.' . $v[3];
+		if ( version_compare( $version, '1.0.3', '<' ) || version_compare( $version, '1.2.1', '>=' ) ) {
+			return false;
+		}
+		return ! ( $v[2] == 0 && $v[3] >= 10 ) && ! ( $v[2] == 1 && $v[3] >= 1 );
 	}
 
 	/**
@@ -250,15 +416,24 @@ class P_Hardening extends P_Core {
 			];
 		}
 
-		if ( ! isset( $_POST['g-recaptcha-response'] ) || empty( $_POST['g-recaptcha-response'] ) ) {
+		if ( ! isset( $_POST['g-recaptcha-response'] ) || ! is_string( $_POST['g-recaptcha-response'] ) || $_POST['g-recaptcha-response'] === '' ) {
 			return [
 				'response' => false,
 				'reason'   => 'RECAPTCHA_EMPTY_RESPONSE',
 			];
 		}
 
-		$response = $this->get_captcha_response( $secret_key, $this->get_option( 'patchstack_captcha_type' ) );
-		if ( isset( $response['success'] ) && ! empty( $response['success'] ) ) {
+		$type = $this->get_option( 'patchstack_captcha_type' );
+		$response = $this->get_captcha_response( $secret_key, $type );
+		$valid = is_array( $response ) && isset( $response['success'] ) && $response['success'] === true;
+		if ( $valid && $type === 'v3' ) {
+			$threshold = apply_filters( 'patchstack_recaptcha_v3_threshold', 0.5 );
+			$threshold = is_numeric( $threshold ) && $threshold >= 0 && $threshold <= 1 ? (float) $threshold : 0.5;
+			$valid = isset( $response['score'], $response['action'] )
+				&& is_numeric( $response['score'] ) && $response['score'] >= $threshold && $response['score'] <= 1
+				&& $response['score'] >= 0 && $response['action'] === 'submit';
+		}
+		if ( $valid ) {
 			return [
 				'response' => true,
 				'reason'   => '',
@@ -305,11 +480,31 @@ class P_Hardening extends P_Core {
 			die( wp_safe_redirect( get_site_url() ) );
 		}
 
-		if ( ( isset( $_SERVER['REQUEST_URI'] ) && stripos( $_SERVER['REQUEST_URI'], 'v2/users' ) !== false ) || ( isset( $_REQUEST['rest_route'] ) && stripos( $_REQUEST['rest_route'], 'v2/users' ) !== false ) ) {
-			if ( ! is_user_logged_in() ) {
-				die( wp_safe_redirect( get_site_url() ) );
-			}
+	}
+
+	/**
+	 * WordPress also reads the author query variable from a POST body, which the check above never sees.
+	 *
+	 * @param WP $wp
+	 * @return void
+	 */
+	public function stop_user_enum_query( $wp ) {
+		$author = isset( $wp->query_vars['author'] ) ? $wp->query_vars['author'] : '';
+		if ( is_scalar( $author ) && preg_match( '/\d/', (string) $author ) && ! is_user_logged_in() && ! is_admin() ) {
+			wp_safe_redirect( get_site_url() );
+			exit;
 		}
+	}
+
+	/**
+	 * The users sitemap lists every author archive, which names the accounts the checks above hide.
+	 *
+	 * @param mixed  $provider
+	 * @param string $name
+	 * @return mixed
+	 */
+	public function remove_users_sitemap( $provider, $name ) {
+		return $name === 'users' ? false : $provider;
 	}
 
 	/**

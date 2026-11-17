@@ -18,6 +18,15 @@ class P_Activation extends P_Core {
 	 */
 	private $activation_errors = [];
 
+	private $migration_versions = [ '3.0.0', '3.0.1', '3.0.2', '3.0.3', '3.0.4', '3.0.5' ];
+
+	/**
+	 * Plugin activation owns its final sync after license setup completes.
+	 *
+	 * @var boolean
+	 */
+	private $defer_license_sync = false;
+
 	/**
 	 * Add the actions required for the activation.
 	 *
@@ -29,6 +38,12 @@ class P_Activation extends P_Core {
 
 		add_action( 'activated_plugin', [ $this, 'redirect_activation' ], 10, 2 );
 		add_action( 'updated_option', [ $this, 'updated_option' ], 10, 3 );
+		add_action( 'patchstack_migrate', [ $this, 'run_scheduled_migrations' ] );
+		add_action( 'admin_notices', [ $this, 'migration_notice' ] );
+		add_action( 'admin_post_patchstack_retry_migration', [ $this, 'retry_migration' ] );
+		add_action( 'added_option', [ $this, 'added_option' ], 10, 2 );
+		add_action( 'update_site_option_active_sitewide_plugins', [ $this, 'refresh_auto_prepend_config' ] );
+		add_action( 'add_site_option_active_sitewide_plugins', [ $this, 'refresh_auto_prepend_config' ] );
 	}
 
 	/**
@@ -159,14 +174,8 @@ class P_Activation extends P_Core {
 		// Check if the webarx/webarx.php plugin is present, if so, remove it.
 		if ( is_dir( WP_PLUGIN_DIR . '/webarx' ) ) {
 
-			// Migrate all current options to the new prefix.
-			global $wpdb;
-			$exists = $wpdb->get_var( "SELECT COUNT(*) FROM " . $wpdb->prefix . "options WHERE option_name = 'webarx_api_token'" );
-			
-			// Move over the options.
-			if ( !is_null( $exists ) && $exists >= 1 ) {
-				$wpdb->query( 'INSERT IGNORE INTO ' . $wpdb->prefix . "options (option_name, option_value, autoload) SELECT REPLACE(option_name, 'webarx_', 'patchstack_') as option_name, option_value, autoload FROM " . $wpdb->prefix . "options WHERE option_name like 'webarx_%'" );
-				$wpdb->query( 'UPDATE ' . $wpdb->prefix . 'options AS a SET option_value = (SELECT option_value FROM ' . $wpdb->prefix . "options WHERE option_name = REPLACE(a.option_name, 'patchstack_', 'webarx_')) WHERE option_name LIKE 'patchstack_%'" );
+			if ( ! $this->migrate_legacy_options() ) {
+				wp_die( esc_html__( 'The existing WebARX settings could not be copied. Please try activating Patchstack again.', 'patchstack' ) );
 			}
 
 			// Deactivate the plugin.
@@ -182,14 +191,20 @@ class P_Activation extends P_Core {
 		// Whether or not we should send a secret key to our API.
 		$sendSecret = false;
 
-		// Activate the license.
-		if ( $this->plugin->client_id != 'PATCHSTACK_CLIENT_ID' && $this->plugin->private_key != 'PATCHSTACK_PRIVATE_KEY' ) {
-			$this->alter_license( $this->plugin->client_id, $this->plugin->private_key, 'activate' );
-		} elseif ( get_option( 'patchstack_clientid', false ) != false && get_option( 'patchstack_secretkey', false ) != false ) {
-			$this->alter_license( get_option( 'patchstack_clientid' ), $this->get_secret_key(), 'activate' );
-		} else {
-			$sendSecret = true;
-			update_option( 'patchstack_license_free', '1', true );
+		$was_deferred = $this->defer_license_sync;
+		$this->defer_license_sync = true;
+		try {
+			// Activate the license.
+			if ( $this->plugin->client_id != 'PATCHSTACK_CLIENT_ID' && $this->plugin->private_key != 'PATCHSTACK_PRIVATE_KEY' ) {
+				$this->alter_license( $this->plugin->client_id, $this->plugin->private_key, 'activate' );
+			} elseif ( get_option( 'patchstack_clientid', false ) != false && get_option( 'patchstack_secretkey', false ) != false ) {
+				$this->alter_license( get_option( 'patchstack_clientid' ), $this->get_secret_key(), 'activate' );
+			} else {
+				$sendSecret = true;
+				update_option( 'patchstack_license_free', '1', true );
+			}
+		} finally {
+			$this->defer_license_sync = $was_deferred;
 		}
 
 		// Update firewall status after activating plugin
@@ -206,10 +221,9 @@ class P_Activation extends P_Core {
 
 		// Immediately send software data to our server to set firewall as enabled.
 		// Also immediately download the whitelist file and the firewall rules.
-		do_action( 'patchstack_send_software_data' );
+		do_action( 'patchstack_sync_software_and_rules' );
 		if ( get_option( 'patchstack_license_free', 0 ) != 1 ) {
 			do_action( 'patchstack_post_firewall_rules' );
-			do_action( 'patchstack_post_dynamic_firewall_rules' );
 		}
 
 		// Try to create the mu-plugins folder/file.
@@ -244,49 +258,188 @@ class P_Activation extends P_Core {
 	}
 
 	/**
+	 * Copy missing settings without replacing a site's current Patchstack configuration.
+	 * A partial copy can be retried while WebARX remains active.
+	 */
+	private function migrate_legacy_options() {
+		global $wpdb;
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT option_name, option_value, autoload FROM $wpdb->options WHERE option_name LIKE %s", $wpdb->esc_like( 'webarx_' ) . '%' ) );
+		if ( $wpdb->last_error || ! is_array( $rows ) ) {
+			return false;
+		}
+		try {
+			foreach ( $rows as $row ) {
+				$name = 'patchstack_' . substr( $row->option_name, strlen( 'webarx_' ) );
+				// Copy serialized bytes without loading objects or changing an existing setting.
+				if ( $wpdb->query( $wpdb->prepare(
+					"INSERT INTO $wpdb->options (option_name, option_value, autoload) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE option_name = option_name",
+					$name, $row->option_value, $row->autoload
+				) ) === false ) {
+					return false;
+				}
+				wp_cache_delete( $name, 'options' );
+			}
+		} finally {
+			// A partial copy must also be visible to WordPress before a later retry.
+			wp_cache_delete( 'alloptions', 'options' );
+			wp_cache_delete( 'notoptions', 'options' );
+		}
+		return true;
+	}
+
+	/**
 	 * Build the required Patchstack tables.
 	 *
 	 * @param null|string  $ver The version to upgrade to.
 	 * @param null|integer $site_id The blog id to perform the upgrades on.
-	 * @return void
+	 * @return bool
 	 */
 	public function migrate( $ver = null, $site_id = null ) {
 		global $wpdb;
-		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-		$charset_collate = $wpdb->get_charset_collate();
-		$prefix          = $site_id != null ? $wpdb->get_blog_prefix( $site_id ) : $wpdb->prefix;
-
-		// The following conditions will only execute if Patchstack is installed because of an update
-		// and if we need to perform migrations.
-		if ( $ver !== null && file_exists( dirname( __FILE__ ) . '/migrations/v' . str_replace( '.', '', $ver ) . '.php' ) ) {
-			require_once dirname( __FILE__ ) . '/migrations/v' . str_replace( '.', '', $ver ) . '.php';
-			return;
+		$switched = false;
+		if ( $site_id !== null ) {
+			if ( ! is_scalar( $site_id ) || ! ctype_digit( (string) $site_id ) || (int) $site_id < 1 ) {
+				return false;
+			}
+			$site_id = (int) $site_id;
+			if ( is_multisite() ) {
+				if ( ! get_site( $site_id ) ) {
+					return false;
+				}
+				if ( $site_id !== get_current_blog_id() ) {
+					switch_to_blog( $site_id );
+					$switched = true;
+				}
+			} elseif ( $site_id !== get_current_blog_id() ) {
+				return false;
+			}
 		}
 
-		// Require the base migration.
-		require_once dirname( __FILE__ ) . '/migrations/base.php';
+		try {
+			require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+			$charset_collate = $wpdb->get_charset_collate();
+			$prefix = $wpdb->prefix;
+			$file = dirname( __FILE__ ) . '/migrations/base.php';
+			if ( $ver !== null ) {
+				if ( ! is_string( $ver ) || ! preg_match( '/^[0-9]+\.[0-9]+\.[0-9]+$/D', $ver ) ) {
+					return false;
+				}
+				$file = dirname( __FILE__ ) . '/migrations/v' . str_replace( '.', '', $ver ) . '.php';
+			}
+			if ( ! is_readable( $file ) ) {
+				return false;
+			}
+
+			// Data migrations must run independently for each site and retry in this request.
+			return ( require $file ) !== false;
+		} finally {
+			if ( $switched ) {
+				restore_current_blog();
+			}
+		}
 	}
 
 	/**
 	 * Check if the database version of the plugin is running behind.
 	 * If so, run the migrations up until the latest version.
 	 *
-	 * @return void
+	 * @return bool
 	 */
 	public function migrate_check() {
 		// Only perform migrations if we have any to execute.
-		$versions = ['3.0.0', '3.0.1', '3.0.2', '3.0.3', '3.0.4'];
+		$versions = $this->migration_versions;
 		if ( count( $versions ) == 0 ) {
-			return;
+			return true;
 		}
 
 		// Get current database version and run the migrations.
-		$db_version = get_option( 'patchstack_db_version', false );
+		$db_version = (string) get_option( 'patchstack_db_version', '0' );
 		foreach ( $versions as $version ) {
 			if ( version_compare( $db_version, $version, '<' ) ) {
-				$this->migrate( $version );
+				if ( ! $this->migrate( $version ) || version_compare( (string) get_option( 'patchstack_db_version', '0' ), $version, '<' ) ) {
+					return false;
+				}
 			}
 		}
+		return true;
+	}
+
+	/**
+	 * Queue schema work outside the request serving a visitor.
+	 *
+	 * @return void
+	 */
+	public function schedule_migrations() {
+		if ( version_compare( (string) get_option( 'patchstack_db_version', '0' ), end( $this->migration_versions ), '>=' ) || (int) get_option( 'patchstack_log_schema_attempts', 0 ) >= 3 ) {
+			return;
+		}
+		if ( ! wp_next_scheduled( 'patchstack_migrate' ) ) {
+			// WordPress 5.2 stores a broken entry when the first event of a new site is a single event.
+			if ( ! is_array( _get_cron_array() ) ) {
+				_set_cron_array( [] );
+			}
+			$when = max( time() + 10, (int) get_option( 'patchstack_log_schema_retry_after', 0 ), (int) get_option( 'patchstack_log_schema_lock', 0 ) );
+			wp_schedule_single_event( $when, 'patchstack_migrate' );
+		}
+	}
+
+	public function run_scheduled_migrations() {
+		global $wpdb;
+		try {
+			$attempts = (int) get_option( 'patchstack_log_schema_attempts', 0 );
+			if ( $attempts >= 3 || (int) get_option( 'patchstack_log_schema_retry_after', 0 ) > time() ) {
+				return;
+			}
+			// Network activation does not run the activation hook separately for each site.
+			$missing = false;
+			foreach ( [ 'patchstack_firewall_log', 'patchstack_event_log', 'patchstack_logic' ] as $table ) {
+				if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix . $table ) ) ) ) {
+					$missing = true;
+					break;
+				}
+			}
+			if ( $missing && ! $this->migrate() ) {
+				update_option( 'patchstack_log_schema_attempts', $attempts + 1, false );
+				update_option( 'patchstack_log_schema_retry_after', time() + 5 * MINUTE_IN_SECONDS, false );
+				return;
+			}
+			// Settings introduced since a connected site last activated its license have no row yet,
+			// and a missing row costs a query on every request that reads it.
+			if ( $this->migrate_check() && get_option( 'patchstack_clientid', '' ) != '' ) {
+				$options = is_a( $this->plugin, 'patchstack' ) || isset( $this->plugin->admin_options ) ? $this->plugin->admin_options : null;
+				if ( $options ) {
+					$options->settings_init();
+				}
+			}
+		} finally {
+			$this->schedule_migrations();
+		}
+	}
+
+	public function migration_notice() {
+		if ( ! current_user_can( 'manage_options' ) || version_compare( (string) get_option( 'patchstack_db_version', '0' ), end( $this->migration_versions ), '>=' ) ) {
+			return;
+		}
+		echo '<div class="notice notice-warning"><p>';
+		if ( get_option( 'patchstack_log_schema_attempts', 0 ) ) {
+			echo esc_html__( 'Patchstack could not finish updating its log tables. Logging may be affected. Automatic retries stop after three attempts. Please ask your host to check database permissions, free disk space, and conflicting indexes before retrying.', 'patchstack' );
+		} else {
+			echo esc_html__( 'Patchstack has a pending log database update. It runs through WordPress cron, or you can run it manually below.', 'patchstack' );
+		}
+		echo ' <a href="' . esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=patchstack_retry_migration' ), 'patchstack-retry-migration' ) ) . '">' . esc_html__( 'Run database update', 'patchstack' ) . '</a></p></div>';
+	}
+
+	public function retry_migration() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You do not have permission to update this database.', 'patchstack' ) );
+		}
+		check_admin_referer( 'patchstack-retry-migration' );
+		delete_option( 'patchstack_log_schema_attempts' );
+		delete_option( 'patchstack_log_schema_retry_after' );
+		wp_clear_scheduled_hook( 'patchstack_migrate' );
+		$this->run_scheduled_migrations();
+		wp_safe_redirect( admin_url() );
+		exit;
 	}
 
 	/**
@@ -294,7 +447,8 @@ class P_Activation extends P_Core {
 	 *
 	 * @return void
 	 */
-	public function deactivate() {
+	public function deactivate( $network_wide = false ) {
+		wp_clear_scheduled_hook( 'patchstack_migrate' );
 		// Update firewall status after de-activating plugin
 		try {
 			$token = $this->plugin->api->get_access_token();
@@ -306,9 +460,14 @@ class P_Activation extends P_Core {
 		}
 
 		// Clear all Patchstack scheduled tasks.
-		$tasks = [ 'patchstack_zip_backup', 'patchstack_send_software_data', 'patchstack_send_hacker_logs', 'patchstack_send_visitor_logs', 'patchstack_send_event_logs', 'patchstack_reset_blocked_attacks', 'patchstack_post_firewall_rules', 'patchstack_post_firewall_htaccess_rules', 'patchstack_post_dynamic_firewall_rules', 'patchstack_update_license_status', 'patchstack_update_plugins', 'patchstack_send_ping', 'patchstack_check_env', 'puc_cron_check_updates-webarx' ];
+		$tasks = [ 'patchstack_retry_software_upload', 'patchstack_zip_backup', 'patchstack_send_software_data', 'patchstack_send_hacker_logs', 'patchstack_send_visitor_logs', 'patchstack_send_event_logs', 'patchstack_reset_blocked_attacks', 'patchstack_post_firewall_rules', 'patchstack_post_firewall_htaccess_rules', 'patchstack_post_dynamic_firewall_rules', 'patchstack_update_license_status', 'patchstack_update_plugins', 'patchstack_send_ping', 'patchstack_check_env', 'puc_cron_check_updates-webarx' ];
 		foreach ( $tasks as $task ) {
 			wp_clear_scheduled_hook( $task );
+		}
+
+		// Shared files must outlive any other active site or network.
+		if ( is_multisite() && ( ! $this->controls_auto_prepend() || $this->has_other_active_sites( $network_wide ) ) ) {
+			return;
 		}
 
 		// Cleanup the .htaccess file.
@@ -372,11 +531,14 @@ class P_Activation extends P_Core {
 
 				// Immediately send software data to our server to set firewall as enabled.
 				// Also immediately download the whitelist file and the firewall rules.
-				do_action( 'patchstack_send_software_data' );
+				if ( ! $this->defer_license_sync ) {
+					do_action( 'patchstack_sync_software_and_rules' );
+				}
 				if ( get_option( 'patchstack_license_free', 0 ) != 1 ) {
 					update_option( 'patchstack_basic_firewall', 1, true );
-					do_action( 'patchstack_post_firewall_rules' );
-					do_action( 'patchstack_post_dynamic_firewall_rules' );
+					if ( ! $this->defer_license_sync ) {
+						do_action( 'patchstack_post_firewall_rules' );
+					}
 					$this->header();
 				}
 
@@ -448,6 +610,17 @@ class P_Activation extends P_Core {
 	}
 
 	/**
+	 * The auto-prepend files are shared by every site in a network, so only its primary site
+	 * installs or removes them. The filter can name another blog that may.
+	 *
+	 * @return bool
+	 */
+	private function controls_auto_prepend() {
+		return ! is_multisite() || ( is_main_network() && is_main_site() )
+			|| apply_filters( 'patchstack_allow_network_remote_management', false, get_current_blog_id(), 'patchstack_firewall_ap_enabled' );
+	}
+
+	/**
 	 * Create the environment needed for the auto prepend firewall functionality.
 	 * 1. First we check if an auto_prepend_file already exists somewhere.
 	 * 2. Then we write to the .htaccess file and check its status code.
@@ -458,13 +631,14 @@ class P_Activation extends P_Core {
 	 */
 	public function auto_prepend_injection($refresh = false)
 	{
-		// Determine if AP firewall is enabled.
-		if ( ! get_option( 'patchstack_firewall_ap_enabled', false ) ) {
-			return;
-		}
-
-		// Determine if we received an error that hasn't been cleared yet.
-		if ( get_option( 'patchstack_firewall_ap_error', '' ) != '' ) {
+		$controls_files = $this->controls_auto_prepend();
+		$config_path = WP_CONTENT_DIR . '/pslogs/config.php';
+		if ( ! $controls_files ) {
+			// The shared loader reads this file even on subsites that never enabled the local installer.
+			if ( ! $refresh || ! $this->has_auto_prepend_config( $config_path ) ) {
+				return;
+			}
+		} elseif ( ! get_option( 'patchstack_firewall_ap_enabled', false ) ) {
 			return;
 		}
 
@@ -473,11 +647,22 @@ class P_Activation extends P_Core {
 			return;
 		}
 
-		// Get filesystem.
+		// Refreshing an installed config must not retry changes to the server configuration.
+		if ( $refresh && $this->has_auto_prepend_config( $config_path ) ) {
+			return $this->refresh_auto_prepend_config();
+		}
+
+		if ( get_option( 'patchstack_firewall_ap_error', '' ) != '' ) {
+			return;
+		}
+
 		global $wp_filesystem;
-		if ( ! $this->get_filesystem() ) {
+		if ( ! $this->get_filesystem( $controls_files ? ABSPATH : dirname( $config_path ) ) ) {
 			update_option( 'patchstack_firewall_ap_error', 'Could not establish filesystem.' );
 			return false;
+		}
+		if ( ! $controls_files ) {
+			return $this->has_auto_prepend_config( $config_path ) && $this->write_auto_prepend_config( $config_path );
 		}
 
 		// First ensure a .htaccess file exists, otherwise no point.
@@ -523,32 +708,7 @@ class P_Activation extends P_Core {
 			return false;
 		}
 
-		// Save current site id.
-		$current_id = get_current_blog_id();
-
-		// Pull data to save into the config.php file.
-		$sites = $this->get_sites();
-		$data = [];
-		foreach ($sites as $site) {
-			$this->switch_to_blog( $site->id );
-			$data[] = [
-				'site_id' => $site->id,
-				'site_url' => preg_replace( '/^https?:\/\//i', '', $site->siteurl ),
-				'home_url' => preg_replace( '/^https?:\/\//i', '', get_option( 'home' ) ),
-				'patchstack_basic_firewall' => get_option( 'patchstack_basic_firewall', 1 ),
-				'patchstack_license_activated' => get_option( 'patchstack_license_activated', 0 ),
-				'patchstack_license_free' => get_option( 'patchstack_license_free', 0 ),
-				'patchstack_firewall_ip_header' => get_option( 'patchstack_firewall_ip_header', '' ),
-				'patchstack_firewall_rules_v3_ap' => base64_encode( get_option( 'patchstack_firewall_rules_v3_ap', '[]' ) )
-			];
-		}
-
-		// Switch back to current site.
-		$this->switch_to_blog( $current_id );
-
-		// Save into the config.php file.
-		if ( ! $wp_filesystem->put_contents( $logs_dir . 'config.php', '<?php return ' . var_export( $data, true ) . ';' ) ) {
-			update_option( 'patchstack_firewall_ap_error', 'The file ' . $logs_dir . 'config.php could not be created.' );
+		if ( ! $this->write_auto_prepend_config( $config_path ) ) {
 			return false;
 		}
 
@@ -630,6 +790,154 @@ class P_Activation extends P_Core {
 		return true;
 	}
 
+	private function has_other_active_sites( $network_wide ) {
+		if ( is_file( WPMU_PLUGIN_DIR . '/patchstack/patchstack.php' ) ) {
+			return true;
+		}
+		foreach ( $this->get_sites() as $site ) {
+			$network_plugins = get_network_option( $site->site_id, 'active_sitewide_plugins', [] );
+			if ( ( ! $network_wide || (int) $site->site_id !== get_current_network_id() ) && isset( $network_plugins[$this->plugin->basename] ) ) {
+				return true;
+			}
+			if ( ( $network_wide || (int) $site->id !== get_current_blog_id() ) && in_array( $this->plugin->basename, (array) get_blog_option( $site->id, 'active_plugins', [] ), true ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public function refresh_auto_prepend_config() {
+		$config_path = WP_CONTENT_DIR . '/pslogs/config.php';
+		if ( $this->has_auto_prepend_config( $config_path ) && $this->get_filesystem( dirname( $config_path ) ) ) {
+			return $this->write_auto_prepend_config( $config_path );
+		}
+		return false;
+	}
+
+	/**
+	 * Whether the auto-prepend config is installed. The backup stands in for a config whose
+	 * replacement over SFTP was cut off, so the next refresh can finish it.
+	 *
+	 * @param string $config_path
+	 * @return boolean
+	 */
+	private function has_auto_prepend_config( $config_path ) {
+		return is_file( $config_path ) || is_file( dirname( $config_path ) . '/config.backup.php' );
+	}
+
+	private function write_auto_prepend_config( $config_path ) {
+		global $wp_filesystem;
+
+		$sites = $this->get_sites();
+		$data = [];
+		foreach ($sites as $site) {
+			$switched = is_multisite() && get_current_blog_id() != $site->id;
+			if ( $switched ) {
+				$this->switch_to_blog( $site->id );
+			}
+			try {
+				$network_plugins = is_multisite() ? get_network_option( $site->site_id, 'active_sitewide_plugins', [] ) : [];
+				$active = is_file( WPMU_PLUGIN_DIR . '/patchstack/patchstack.php' )
+					|| in_array( $this->plugin->basename, (array) get_option( 'active_plugins', [] ), true )
+					|| isset( $network_plugins[$this->plugin->basename] );
+				$data[] = [
+					'site_id' => $site->id,
+					'site_url' => preg_replace( '/^https?:\/\//i', '', $site->siteurl ),
+					'home_url' => preg_replace( '/^https?:\/\//i', '', get_option( 'home' ) ),
+					'patchstack_basic_firewall' => $active ? get_option( 'patchstack_basic_firewall', 1 ) : 0,
+					'patchstack_license_activated' => get_option( 'patchstack_license_activated', 0 ),
+					'patchstack_license_free' => get_option( 'patchstack_license_free', 0 ),
+					'patchstack_firewall_ip_header' => get_option( 'patchstack_firewall_ip_header', '' ),
+					'patchstack_log_redaction' => get_option( 'patchstack_log_redaction', 0 ),
+					'patchstack_firewall_rules_v3_ap' => base64_encode( get_option( 'patchstack_firewall_rules_v3_ap', '[]' ) )
+				];
+			} finally {
+				// Preserve any existing switches owned by the caller, including syncs.
+				if ( $switched ) {
+					restore_current_blog();
+				}
+			}
+		}
+
+		$content = '<?php return ' . var_export( $data, true ) . ';';
+		$temp_path = $config_path . '.' . uniqid( '', true ) . '.php';
+		$written = $wp_filesystem->put_contents( $temp_path, $content )
+			&& $wp_filesystem->get_contents( $temp_path ) === $content;
+		if ( $written ) {
+			// Direct and SSH2 move wrappers may delete the destination before replacement succeeds.
+			if ( $wp_filesystem->method === 'direct' ) {
+				$written = @rename( $temp_path, $config_path );
+			} elseif ( $wp_filesystem->method === 'ssh2' ) {
+				$written = $this->replace_over_sftp( $wp_filesystem->sftp_link, $temp_path, $config_path );
+			} else {
+				$written = $wp_filesystem->move( $temp_path, $config_path, true );
+			}
+		}
+		if ( ! $written ) {
+			$wp_filesystem->delete( $temp_path );
+			update_option( 'patchstack_firewall_ap_error', 'The file ' . $config_path . ' could not be created.' );
+			return false;
+		}
+
+		// The live config is complete again, so a backup from an unfinished replacement can go.
+		$backup_path = dirname( $config_path ) . '/config.backup.php';
+		if ( $wp_filesystem->exists( $config_path ) && $wp_filesystem->exists( $backup_path ) ) {
+			$wp_filesystem->delete( $backup_path );
+		}
+
+		if ( function_exists( 'opcache_invalidate' ) ) {
+			@opcache_invalidate( $config_path, true );
+		}
+		// A config write resolves filesystem errors, but cannot resolve installation errors.
+		if ( in_array( get_option( 'patchstack_firewall_ap_error', '' ), [
+			'Could not establish filesystem.',
+			'Unable to establish filesystem connection.',
+			'Unable to establish filesystem connection through acquired creds.',
+			'The file ' . $config_path . ' could not be created.',
+		], true ) ) {
+			update_option( 'patchstack_firewall_ap_error', '' );
+		}
+		return true;
+	}
+
+	/**
+	 * Put a prepared file in place of the live one over SFTP. An SFTP rename does not overwrite
+	 * an existing file, so the live file steps aside under its backup name first and returns if
+	 * the swap fails. The loader reads the backup while the live file is missing, so a complete
+	 * config stays readable even when the connection drops halfway; the next refresh finishes
+	 * the replacement.
+	 *
+	 * @param resource $sftp
+	 * @param string $temp_path
+	 * @param string $path
+	 * @return boolean
+	 */
+	private function replace_over_sftp( $sftp, $temp_path, $path ) {
+		// Nothing to step aside on a first installation or after an attempt that was cut off,
+		// or the server overwrites on rename.
+		if ( @ssh2_sftp_rename( $sftp, $temp_path, $path ) ) {
+			return true;
+		}
+
+		// With the live file missing or out of reach, a backup is the only complete config
+		// and has to stay. Next to a live file it is a leftover of an earlier attempt.
+		$backup_path = dirname( $path ) . '/config.backup.php';
+		if ( ! @ssh2_sftp_stat( $sftp, $path ) ) {
+			return false;
+		}
+		@ssh2_sftp_unlink( $sftp, $backup_path );
+		if ( ! @ssh2_sftp_rename( $sftp, $path, $backup_path ) ) {
+			return false;
+		}
+
+		if ( @ssh2_sftp_rename( $sftp, $temp_path, $path ) ) {
+			return true;
+		}
+
+		@ssh2_sftp_rename( $sftp, $backup_path, $path );
+		return false;
+	}
+
 	/**
 	 * Remove everything related to the auto prepend functionality.
 	 * 
@@ -637,8 +945,14 @@ class P_Activation extends P_Core {
 	 */
 	public function auto_prepend_removal()
 	{
+		if ( ! $this->controls_auto_prepend() ) {
+			return;
+		}
+
 		global $wp_filesystem;
-		$this->get_filesystem();
+		if ( ! $this->get_filesystem() ) {
+			return false;
+		}
 
 		// Define our paths to access.
 		$logs_dir = WP_CONTENT_DIR . '/pslogs/';
@@ -676,12 +990,12 @@ class P_Activation extends P_Core {
 	 * 
 	 * @return boolean
 	 */
-	private function get_filesystem()
+	private function get_filesystem( $context = ABSPATH )
 	{
 		// Seems to be the only native way to obtain FTP credentials, if defined.
 		include_once( ABSPATH . 'wp-admin/includes/file.php' );
 		ob_start();
-		$creds = request_filesystem_credentials( admin_url( 'admin-ajax.php' ), '', false, ABSPATH, null, true );
+		$creds = request_filesystem_credentials( admin_url( 'admin-ajax.php' ), '', false, $context, null, true );
 		ob_end_clean();
 
 		// Returns false if no filesystem connection could be determined.
@@ -691,7 +1005,7 @@ class P_Activation extends P_Core {
 		}
 
 		// Attempt to initialize it.
-		$fs = WP_Filesystem( $creds, ABSPATH, true );
+		$fs = WP_Filesystem( $creds, $context, true );
 		if ( ! $fs ) {
 			update_option( 'patchstack_firewall_ap_error', 'Unable to establish filesystem connection through acquired creds.' );
 			return false;
@@ -716,7 +1030,7 @@ class P_Activation extends P_Core {
 			];
 		}
 
-		return get_sites();
+		return get_sites( [ 'number' => 0 ] );
 	}
 
 	/**
@@ -842,9 +1156,15 @@ auto_prepend_file = '" . $mu_file_as . "'
 	 * @return void
 	 */
 	public function updated_option( $option_name, $old_value, $value ) {
+		if ( $option_name === 'active_plugins' ) {
+			if ( in_array( $this->plugin->basename, (array) $old_value, true ) !== in_array( $this->plugin->basename, (array) $value, true ) ) {
+				$this->refresh_auto_prepend_config();
+			}
+			return;
+		}
 		// Only allow to run for our options. The IP header is embedded in the AP config
 		// file too, so a change there must also regenerate it.
-		if ( !in_array( $option_name, [ 'patchstack_basic_firewall', 'patchstack_license_free', 'patchstack_firewall_rules_v3_ap', 'patchstack_firewall_ip_header' ] ) ) {
+		if ( !in_array( $option_name, [ 'patchstack_basic_firewall', 'patchstack_license_activated', 'patchstack_license_free', 'patchstack_firewall_rules_v3_ap', 'patchstack_firewall_ip_header', 'patchstack_log_redaction' ] ) ) {
 			return;
 		}
 
@@ -854,5 +1174,20 @@ auto_prepend_file = '" . $mu_file_as . "'
 		}
 
 		$this->auto_prepend_injection(true);
+	}
+
+	/**
+	 * A site's initial license or redaction setting may be added after its shared config was written.
+	 *
+	 * @param string $option_name
+	 * @param mixed  $value
+	 * @return void
+	 */
+	public function added_option( $option_name, $value ) {
+		if ( ! in_array( $option_name, [ 'patchstack_log_redaction', 'patchstack_license_activated', 'active_plugins' ], true ) ) {
+			return;
+		}
+
+		$this->updated_option( $option_name, 0, $value );
 	}
 }

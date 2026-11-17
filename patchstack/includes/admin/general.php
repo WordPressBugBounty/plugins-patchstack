@@ -28,9 +28,12 @@ class P_Admin_General extends P_Core {
 		// re-reads the new value; update_option fires before the write and sees the old value.
 		add_action( 'updated_option', [ $this, 'update_option_ap' ], 10, 3 );
 
-		// If the firewall or whitelist rules do not exist, attempt to pull fresh.
+		// If the firewall or whitelist rules do not exist, attempt to pull fresh. This is checked on
+		// every request, so a pull the API keeps refusing waits a few minutes before it is tried again.
 		$token = get_option( 'patchstack_api_token', false );
-		if ( ! empty( $token ) && ( get_option( 'patchstack_firewall_rules', '' ) == '' || get_option( 'patchstack_whitelist_keys_rules' ) == '' ) && get_option( 'patchstack_license_free', 0 ) != 1 ) {
+		if ( ! empty( $token ) && ( get_option( 'patchstack_firewall_rules', '' ) == '' || get_option( 'patchstack_whitelist_keys_rules' ) == '' ) && get_option( 'patchstack_license_free', 0 ) != 1
+			&& ! get_transient( 'patchstack_rules_pull_attempted' ) ) {
+			set_transient( 'patchstack_rules_pull_attempted', 1, 5 * MINUTE_IN_SECONDS );
 			do_action( 'patchstack_post_dynamic_firewall_rules' );
 		}
 	}
@@ -56,10 +59,12 @@ class P_Admin_General extends P_Core {
 			return;
 		}
 
-		// Check root .htaccess file and data folder writability.
 		$files = [];
-		if ( file_exists( ABSPATH . '.htaccess' ) && ! wp_is_writable( ABSPATH . '.htaccess' ) ) {
-			array_push( $files, ABSPATH . '.htaccess' );
+		$paths = [ $this->plugin->htaccess->get_htaccess_path(), wp_normalize_path( ABSPATH ) . '.htaccess' ];
+		foreach ( array_unique( $paths ) as $path ) {
+			if ( file_exists( $path ) && ! wp_is_writable( $path ) ) {
+				$files[] = $path;
+			}
 		}
 
 		// Are there any errors to display?

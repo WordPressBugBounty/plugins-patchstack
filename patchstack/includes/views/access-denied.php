@@ -3,6 +3,15 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+
+// The firewall can block a request while plugins are still loading, before WordPress loads
+// translations at init. Translating the patchstack domain that early triggers a
+// _load_textdomain_just_in_time notice on WP 6.7+, so load the language pack explicitly.
+// The page always exits after rendering, so nothing later in the request is affected.
+if ( ! did_action( 'after_setup_theme' ) && ! is_textdomain_loaded( 'patchstack' ) ) {
+	$patchstack_locale = determine_locale();
+	load_textdomain( 'patchstack', WP_LANG_DIR . '/plugins/patchstack-' . $patchstack_locale . '.mo', $patchstack_locale );
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">

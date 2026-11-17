@@ -2,14 +2,14 @@
 # This file is distributed under the GPLv3.
 msgid ""
 msgstr ""
-"Project-Id-Version: Patchstack Security 2.3.7\n"
+"Project-Id-Version: Patchstack Security 2.3.8\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/patchstack\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-07-27T12:47:22+00:00\n"
+"POT-Creation-Date: 2026-10-13T07:51:14+00:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: patchstack\n"
@@ -54,18 +54,6 @@ msgstr ""
 
 #: includes/admin/menu.php:106
 msgid "Sorry, there was a problem processing your request."
-msgstr ""
-
-#: includes/api.php:102
-msgid "API keys missing! Unable to obtain an access token."
-msgstr ""
-
-#: includes/api.php:137
-msgid "Unexpected error! Unable to obtain an access token. Error code: "
-msgstr ""
-
-#: includes/api.php:163
-msgid "Unexpected error! Unable to obtain an access token."
 msgstr ""
 
 #: includes/core.php:230
@@ -178,28 +166,28 @@ msgstr ""
 
 #: includes/views/access-denied-login.php:36
 #: includes/views/access-denied-login.php:49
-#: includes/views/access-denied.php:40
-#: includes/views/access-denied.php:53
+#: includes/views/access-denied.php:49
+#: includes/views/access-denied.php:62
 msgid "Return to homepage"
 msgstr ""
 
 #: includes/views/access-denied-login.php:39
 #: includes/views/access-denied-login.php:52
-#: includes/views/access-denied.php:43
-#: includes/views/access-denied.php:56
+#: includes/views/access-denied.php:52
+#: includes/views/access-denied.php:65
 msgid "This website is secured by"
 msgstr ""
 
-#: includes/views/access-denied.php:16
-#: includes/views/access-denied.php:22
+#: includes/views/access-denied.php:25
+#: includes/views/access-denied.php:31
 msgid "Access Denied"
 msgstr ""
 
-#: includes/views/access-denied.php:29
+#: includes/views/access-denied.php:38
 msgid "Error Code"
 msgstr ""
 
-#: includes/views/access-denied.php:33
+#: includes/views/access-denied.php:42
 msgid "This request has been blocked by Patchstack. If this message persists and you are a legitimate user, contact the site administrator with the above code."
 msgstr ""
 

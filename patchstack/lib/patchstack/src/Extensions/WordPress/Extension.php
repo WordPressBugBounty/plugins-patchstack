@@ -3,6 +3,7 @@
 namespace Patchstack\Extensions\WordPress;
 
 use Patchstack\Extensions\ExtensionInterface;
+use Patchstack\LogRedactor;
 
 class Extension implements ExtensionInterface
 {
@@ -13,7 +14,8 @@ class Extension implements ExtensionInterface
      */
     public $options = [
         'patchstack_basic_firewall_roles' => ['administrator', 'editor', 'author'],
-        'patchstack_whitelist' => ''
+        'patchstack_whitelist' => '',
+        'patchstack_log_redaction' => 0
     ];
 
     /**
@@ -93,17 +95,29 @@ class Extension implements ExtensionInterface
             unset($request['post']);
         }
 
+        $requestUri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+        $postData = json_encode($request);
+        if (!empty($this->options['patchstack_log_redaction'])) {
+            // Skip the entry rather than store the raw request if the redactor is missing (incomplete update).
+            if (!class_exists('Patchstack\LogRedactor')) {
+                return;
+            }
+
+            $requestUri = LogRedactor::uri($requestUri);
+            $postData = LogRedactor::PAYLOAD;
+        }
+
         // Insert into the logs.
         $wpdb->insert(
             $wpdb->prefix . 'patchstack_firewall_log',
             [
                 'ip'          => $this->getIpAddress(),
-                'request_uri' => isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '',
-                'user_agent'  => isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '',
-                'method'      => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '',
+                'request_uri' => $this->logField($requestUri),
+                'user_agent'  => $this->logField(isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : ''),
+                'method'      => $this->logField(isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : ''),
                 'fid'         => '55' . $ruleId,
                 'flag'        => '',
-                'post_data'   => json_encode($request),
+                'post_data'   => $postData,
                 'block_type'  => $logType
             ]
         );
@@ -165,6 +179,11 @@ class Extension implements ExtensionInterface
      */
     public function isBlocked($minutes, $blockTime, $attempts)
     {
+        // Loopback requests can share a banned IP. Cron still passes through rule inspection.
+        if (defined('DOING_CRON') && DOING_CRON) {
+            return false;
+        }
+
         // Calculate block time.
         if (empty($minutes) || empty($blockTime)) {
             $time = 30 + 60;
@@ -409,68 +428,71 @@ class Extension implements ExtensionInterface
         return isset($_FILES) && count($_FILES) > 0;
     }
 
-	/**
-	 * CIDR notation IP block check.
-	 *
-	 * @param string $ip The IP address of the user.
-	 * @param string $range The range to check.
-	 * @return boolean Whether or not the IP is in the range.
-	 */
-	public function check_subnet_mask_rule( $ip, $range )
+    /**
+     * CIDR notation IP check for IPv4 and IPv6.
+     *
+     * @param string $ip The IP address of the user.
+     * @param string $range The range to check.
+     * @return boolean Whether or not the IP is in the range.
+     */
+    public function check_subnet_mask_rule($ip, $range)
     {
-		list($range, $netmask) = explode( '/', $range, 2 );
+        $parts = explode('/', (string) $range, 2);
+        if (!is_string($ip) || count($parts) !== 2 || !ctype_digit($parts[1])) {
+            return false;
+        }
+        $network = @inet_pton(trim($parts[0]));
+        $address = @inet_pton($ip);
+        $bits = (int) $parts[1];
+        if ($network === false || $address === false || strlen($network) !== strlen($address) || $bits > strlen($address) * 8) {
+            return false;
+        }
+        $bytes = (int) ($bits / 8);
+        $remainder = $bits % 8;
+        return substr($network, 0, $bytes) === substr($address, 0, $bytes)
+            && (!$remainder || (ord($network[$bytes]) >> (8 - $remainder)) === (ord($address[$bytes]) >> (8 - $remainder)));
+    }
 
-		// A malformed netmask would throw a TypeError on the arithmetic below on
-		// PHP 8; treat anything outside 0-32 as a non-match.
-		if ( ! is_numeric( $netmask ) || $netmask < 0 || $netmask > 32 ) {
-			return false;
-		}
-		$netmask = (int) $netmask;
-
-		$range_decimal         = ip2long( $range );
-		$ip_decimal            = ip2long( $ip );
-		$wildcard_decimal      = pow( 2, ( 32 - $netmask ) ) - 1;
-		$netmask_decimal       = ~ $wildcard_decimal;
-		return ( ( $ip_decimal & $netmask_decimal ) == ( $range_decimal & $netmask_decimal ) );
-	}
-
-	/**
-	 * Wildcard IP block check.
-	 *
-	 * @param string $ip The IP address of the user.
-	 * @param string $rule The wildcard range to check against.
-	 * @return boolean Whether or not the IP is in the wilcard range.
-	 */
-	public function check_wildcard_rule( $ip, $rule )
+    /**
+     * Wildcard IP check. The whole rule has to match a valid address, so 192.*.2.7 no longer
+     * matches everything that starts with 192.
+     *
+     * @param string $ip The IP address of the user.
+     * @param string $rule The wildcard range to check against.
+     * @return boolean Whether or not the IP is in the wildcard range.
+     */
+    public function check_wildcard_rule($ip, $rule)
     {
-		$match = explode( '*', $rule );
-		$match = $match[0];
-		return ( substr( $ip, 0, strlen( $match ) ) == $match );
-	}
+        if (!is_string($ip) || !filter_var($ip, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        $pattern = str_replace('\\*', '[0-9a-f:.]*', preg_quote(trim((string) $rule), '~'));
+        return preg_match('~^' . $pattern . '$~iD', $ip) === 1;
+    }
 
-	/**
-	 * IP range block check.
-	 *
-	 * @param string|array $ip The IP address of the user.
-	 * @param string       $rule The range to check against.
-	 * @return boolean Whether or not the IP is in the range.
-	 */
-	public function check_range_rule( $ip, $rule )
+    /**
+     * IP range check for IPv4 and IPv6.
+     *
+     * @param string|array $ip The IP address of the user.
+     * @param string       $rule The range to check against.
+     * @return boolean Whether or not the IP is in the range.
+     */
+    public function check_range_rule($ip, $rule)
     {
-		// Check if client has multiple IPs
-		if ( is_array( $ip ) ) {
-			$ip = $ip[0];
-		}
-
-		$first_ip  = explode( '-', $rule );
-		$second_ip = explode( '-', $rule );
-
-		$start_ip   = ip2long( $first_ip[0] );
-		$end_ip     = ip2long( $second_ip[1] );
-		$request_ip = ip2long( $ip );
-
-		return ( $request_ip >= $start_ip && $request_ip <= $end_ip );
-	}
+        $parts = explode('-', (string) $rule, 2);
+        if (is_array($ip)) {
+            $ip = reset($ip);
+        }
+        if (!is_string($ip) || count($parts) !== 2) {
+            return false;
+        }
+        $start = @inet_pton(trim($parts[0]));
+        $end = @inet_pton(trim($parts[1]));
+        $address = @inet_pton($ip);
+        return $start !== false && $end !== false && $address !== false
+            && strlen($start) === strlen($address) && strlen($end) === strlen($address)
+            && strcmp($address, $start) >= 0 && strcmp($address, $end) <= 0;
+    }
 
     /**
      * Given an array of the current counters, merge it with the past counters.
@@ -479,6 +501,11 @@ class Extension implements ExtensionInterface
      * @param array $oldCounters
      * @return array
      */
+    private function logField($value)
+    {
+        return is_object($this->core) && method_exists($this->core, 'log_field') ? $this->core->log_field($value) : $value;
+    }
+
     public function merge_counters($newCounters, $oldCounters)
     {
         // The new counters to return.

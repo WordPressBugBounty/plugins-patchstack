@@ -5,8 +5,13 @@ if ( defined( 'PS_FW_MU_RAN' ) ) {
     return;
 }
 
-// Attempt to load config file.
-if ( ! file_exists( __DIR__ . '/../../../pslogs/config.php' ) || ! file_exists ( __DIR__ . '/../lib/patchstack/vendor/autoload.php' ) ) {
+// Attempt to load config file. A replacement over SFTP that was cut off leaves the previous
+// config under its backup name until the next refresh.
+$ps_config = __DIR__ . '/../../../pslogs/config.php';
+if ( ! file_exists( $ps_config ) ) {
+    $ps_config = __DIR__ . '/../../../pslogs/config.backup.php';
+}
+if ( ! file_exists( $ps_config ) || ! file_exists ( __DIR__ . '/../lib/patchstack/vendor/autoload.php' ) ) {
     return;
 }
 
@@ -15,7 +20,7 @@ define( 'PS_LOGS', __DIR__ . '/../../../pslogs/' );
 define( 'PS_PATH', __DIR__ . '/../' );
 
 // Parse options.
-$ps_options = @include( PS_LOGS . 'config.php' );
+$ps_options = @include( $ps_config );
 if ( ! is_array( $ps_options ) || count( $ps_options ) === 0 ) {
     return;
 }

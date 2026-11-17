@@ -30,7 +30,7 @@ class P_Firewall extends P_Core {
 		parent::__construct( $core );
 
 		// If we only want to initialize the firewall but not execute the rules.
-		if ( $skip || defined( 'DOING_CRON' ) ) {
+		if ( $skip ) {
 			return;
 		}
 
@@ -39,7 +39,8 @@ class P_Firewall extends P_Core {
 		$extension = new Patchstack\Extensions\WordPress\Extension(
 			[
 				'patchstack_basic_firewall_roles' => $this->get_option( 'patchstack_basic_firewall_roles', [ 'administrator', 'editor', 'author' ] ),
-				'patchstack_whitelist' => get_option( 'patchstack_whitelist', '' )
+				'patchstack_whitelist' => get_option( 'patchstack_whitelist', '' ),
+				'patchstack_log_redaction' => get_option( 'patchstack_log_redaction', 0 )
 			],
 			$this
 		);
@@ -166,14 +167,24 @@ class P_Firewall extends P_Core {
 			return;
 		}
 
+		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
+		if ( get_option( 'patchstack_log_redaction', 0 ) ) {
+			// Skip the entry rather than store the raw URI if the redactor can't be loaded.
+			if ( ! $this->log_redactor_available() ) {
+				return;
+			}
+
+			$request_uri = Patchstack\LogRedactor::uri( $request_uri );
+		}
+
 		// Insert into the logs.
 		$wpdb->insert(
 			$wpdb->prefix . 'patchstack_firewall_log',
 			array(
 				'ip'          => $this->get_ip(),
-				'request_uri' => isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '',
-				'user_agent'  => isset( $_SERVER['HTTP_USER_AGENT'] ) ? $_SERVER['HTTP_USER_AGENT'] : '',
-				'method'      => isset( $_SERVER['REQUEST_METHOD'] ) ? $_SERVER['REQUEST_METHOD'] : '',
+				'request_uri' => $this->log_field( $request_uri ),
+				'user_agent'  => $this->log_field( isset( $_SERVER['HTTP_USER_AGENT'] ) ? $_SERVER['HTTP_USER_AGENT'] : '' ),
+				'method'      => $this->log_field( isset( $_SERVER['REQUEST_METHOD'] ) ? $_SERVER['REQUEST_METHOD'] : '' ),
 				'fid'         => $fid,
 				'flag'        => '',
 				'post_data'   => '',

@@ -4,7 +4,7 @@
  * Plugin URI:  https://patchstack.com/?utm_medium=wp&utm_source=dashboard&utm_campaign=patchstack%20plugin
  * Author URI: https://patchstack.com/?utm_medium=wp&utm_source=dashboard&utm_campaign=patchstack%20plugin
  * Description: Patchstack identifies security vulnerabilities in WordPress plugins, themes, and core.
- * Version: 2.3.7
+ * Version: 2.3.8
  * Author: Patchstack
  * License: GPLv3
  * Text Domain: patchstack
@@ -59,7 +59,7 @@ if ( ! class_exists( 'patchstack' ) ) {
 		 *
 		 * @var string
 		 */
-		const VERSION = '2.3.7';
+		const VERSION = '2.3.8';
 
 		/**
 		 * API URL of Patchstack to communicate with.
@@ -206,11 +206,15 @@ if ( ! class_exists( 'patchstack' ) ) {
 				'admin_general' => 'P_Admin_General',
 				'admin_menu'    => 'P_Admin_Menu',
 			] as $var => $class ) {
-				$this->$var = new $class( $this );
+				if ( ! isset( $this->$var ) ) {
+					$this->$var = new $class( $this );
+				}
 			}
 
 			// Load firewall base functionality.
-			$this->firewall_base = new P_Firewall( true, $this, true );
+			if ( ! isset( $this->firewall_base ) ) {
+				$this->firewall_base = new P_Firewall( true, $this, true );
+			}
 		}
 
 		/**
@@ -306,9 +310,9 @@ if ( ! class_exists( 'patchstack' ) ) {
 		 *
 		 * @return void
 		 */
-		public function deactivate() {
+		public function deactivate( $network_wide = false ) {
 			$this->plugin_classes();
-			$this->activation->deactivate();
+			$this->activation->deactivate( $network_wide );
 		}
 
 		/**
@@ -331,8 +335,8 @@ if ( ! class_exists( 'patchstack' ) ) {
 			// Initialize plugin classes.
 			$this->plugin_classes();
 
-			// Perform migrations if necessary.
-			$this->activation->migrate_check();
+			// Schedule pending database migrations.
+			$this->activation->schedule_migrations();
 
 			// If license expiration has not been fetched yet while the plugin is active, update it.
 			if ( get_option( 'patchstack_api_token', '' ) == '' && get_option( 'patchstack_license_expiry', '' ) == '' ) {
@@ -413,6 +417,10 @@ if ( ! function_exists( 'patchstack_uninstall' ) ) {
 			if ( is_multisite() ) {
 				delete_site_option( $option->option_name );
 			}
+		}
+
+		if ( is_multisite() ) {
+			delete_network_option( get_main_network_id(), 'patchstack_network_plugin_updates' );
 		}
 
 		// Drop all tables.

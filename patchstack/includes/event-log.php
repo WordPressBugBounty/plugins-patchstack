@@ -76,7 +76,7 @@ class P_Event_Log extends P_Core {
 					'action'      => isset( $args['action'] ) ? $args['action'] : '',
 					'object_name' => isset( $args['object_name'] ) ? $args['object_name'] : '',
 					'date'        => current_time( 'mysql' ),
-					'flag'        => '',
+					'flag'        => $args['action'] === 'failed login' ? 'patchstack:login-audit' : '',
 				],
 				[ '%s', '%s', '%s', '%d', '%s', '%s', '%s' ]
 			);

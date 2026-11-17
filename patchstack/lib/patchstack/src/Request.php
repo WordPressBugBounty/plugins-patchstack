@@ -77,7 +77,9 @@ class Request
                 $data = $_GET;
                 break;
             case 'request':
-                $data = $_REQUEST;
+                // WordPress rebuilds $_REQUEST from GET and POST after plugins load. Before that,
+                // PHP's own copy can hold a cookie that shadows the value the site will act on.
+                $data = array_merge($_GET, $_POST);
                 break;
             case 'cookie':
                 $data = $_COOKIE;

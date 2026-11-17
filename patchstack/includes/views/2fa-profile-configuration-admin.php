@@ -4,8 +4,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-if (checked( 1, get_user_option( 'webarx_2fa_enabled', $user->ID ), false )) {
+if (checked( 1, $this->get_2fa_option( $user->ID, 'enabled' ), false )) {
 ?>
+<input type="hidden" name="patchstack_2fa_profile" value="1">
 <table class="form-table">
 	<tbody>
 		<tr>
@@ -13,7 +14,7 @@ if (checked( 1, get_user_option( 'webarx_2fa_enabled', $user->ID ), false )) {
 			<td>
 				<fieldset>
 					<legend class="screen-reader-text"><span><?php esc_attr_e( 'Enable 2FA', 'patchstack' ); ?></span></legend>
-					<label for="patchstack_2fa_enabled"><input name="patchstack_2fa_enabled" type="checkbox" id="patchstack_2fa_enabled" value="1" <?php echo checked( 1, get_user_option( 'webarx_2fa_enabled', $user->ID ), false ); ?>> <?php esc_attr_e( 'Enable 2FA on this account', 'patchstack' ); ?></label><br />
+					<label for="patchstack_2fa_enabled"><input name="patchstack_2fa_enabled" type="checkbox" id="patchstack_2fa_enabled" value="1" <?php echo checked( 1, $this->get_2fa_option( $user->ID, 'enabled' ), false ); ?>> <?php esc_attr_e( 'Enable 2FA on this account', 'patchstack' ); ?></label><br />
 				</fieldset>
 			</td>
 		</tr>

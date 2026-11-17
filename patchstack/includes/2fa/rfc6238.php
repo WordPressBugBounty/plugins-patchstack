@@ -16,6 +16,13 @@ class TokenAuth6238 {
 	 * @return bool True if success, false if failure
 	 */
 	public static function verify( $secretkey, $code, $rangein30s = 3 ) {
+		return self::verify_time_step( $secretkey, $code, $rangein30s ) !== false;
+	}
+
+	public static function verify_time_step( $secretkey, $code, $rangein30s = 3 ) {
+		if ( ! is_scalar( $code ) || ! preg_match( '/^[0-9]{6}$/D', (string) $code ) ) {
+			return false;
+		}
 		$key           = Base32Static::decode( $secretkey );
 		$unixtimestamp = time() / 30;
 
@@ -33,7 +40,7 @@ class TokenAuth6238 {
 			// codes authenticator apps display (e.g. "012345").
 			$computed = str_pad( (string) self::oath_truncate( $thiskey, 6 ), 6, '0', STR_PAD_LEFT );
 			if ( self::stringEquals( $computed, (string) $code ) ) {
-				return true;
+				return $checktime;
 			}
 		}
 

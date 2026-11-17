@@ -6,8 +6,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Create firewall log table.
+$firewall_table_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $prefix . 'patchstack_firewall_log' ) ) );
+if ( $wpdb->last_error ) {
+	return false;
+}
 $sql = 'CREATE TABLE IF NOT EXISTS `' . $prefix . "patchstack_firewall_log` (
-    id mediumint(9) NOT NULL AUTO_INCREMENT,
+    id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
     ip tinytext NOT NULL,
     flag tinytext NOT NULL,
     fid mediumint(4),
@@ -20,9 +24,19 @@ $sql = 'CREATE TABLE IF NOT EXISTS `' . $prefix . "patchstack_firewall_log` (
     block_type VARCHAR(255) NOT NULL DEFAULT '',
     block_params VARCHAR(255) NOT NULL DEFAULT '',
 	PRIMARY KEY (id),
-    UNIQUE KEY id (id)
+    UNIQUE KEY id (id),
+    KEY ps_ban_lookup (ip(45),apply_ban,block_type(5),log_date)
 ) $charset_collate;";
 dbDelta( $sql );
+if ( $wpdb->last_error ) {
+	return false;
+}
+if ( ! $firewall_table_exists ) {
+	delete_option( 'patchstack_log_schema_retry_after' );
+	delete_option( 'patchstack_log_schema_attempts' );
+	// A newly created table starts a new ID sequence.
+	update_option( 'patchstack_firewall_log_lastid', 0 );
+}
 
 // Create logic table that will store the firewall rules descriptions.
 $sql = 'CREATE TABLE IF NOT EXISTS `' . $prefix . "patchstack_logic` (
@@ -34,10 +48,17 @@ $sql = 'CREATE TABLE IF NOT EXISTS `' . $prefix . "patchstack_logic` (
     UNIQUE KEY id (id)
 ) $charset_collate;";
 dbDelta( $sql );
+if ( $wpdb->last_error ) {
+	return false;
+}
 
 // Create table that will store all events.
+$event_table_exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $prefix . 'patchstack_event_log' ) ) );
+if ( $wpdb->last_error ) {
+	return false;
+}
 $sql = 'CREATE TABLE IF NOT EXISTS `' . $prefix . "patchstack_event_log` (
-    id mediumint(9) NOT NULL AUTO_INCREMENT,
+    id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
     author tinytext  NULL,
     ip tinytext  NULL,
     flag tinytext NULL,
@@ -50,6 +71,14 @@ $sql = 'CREATE TABLE IF NOT EXISTS `' . $prefix . "patchstack_event_log` (
     UNIQUE KEY id (id)
     ) $charset_collate;";
 dbDelta( $sql );
+if ( $wpdb->last_error ) {
+	return false;
+}
+if ( ! $event_table_exists ) {
+	delete_option( 'patchstack_log_schema_retry_after' );
+	delete_option( 'patchstack_log_schema_attempts' );
+	update_option( 'patchstack_eventlog_lastid', 0 );
+}
 
 // Insert base firewall rules.
 $result = $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $prefix . 'patchstack_logic' );
@@ -237,6 +266,6 @@ if ( ! $result ) {
 	}
 }
 
-update_option( 'patchstack_firewall_log_lastid', 0 );
-update_option( 'patchstack_eventlog_lastid', 0 );
+add_option( 'patchstack_firewall_log_lastid', 0 );
+add_option( 'patchstack_eventlog_lastid', 0 );
 add_option( 'patchstack_db_version', $this->plugin->version );

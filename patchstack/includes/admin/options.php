@@ -37,6 +37,7 @@ class P_Admin_Options extends P_Core {
 		'patchstack_activity_log_posts'					=> ['default' => 0, 'autoload' => 'yes'],
 		'patchstack_activity_log_comments'				=> ['default' => 0, 'autoload' => 'yes'],
 		'patchstack_xmlrpc_is_disabled'                 => ['default' => 1, 'autoload' => 'yes'],
+		'patchstack_disable_curl_decoding'              => ['default' => 0, 'autoload' => 'yes'],
 		'patchstack_captcha_type'                       => ['default' => 'v2', 'autoload' => 'no'],
 		'patchstack_captcha_public_key_v3'              => ['default' => '', 'autoload' => 'no'],
 		'patchstack_captcha_private_key_v3'             => ['default' => '', 'autoload' => 'no'],
@@ -73,7 +74,7 @@ class P_Admin_Options extends P_Core {
 		'patchstack_block_debug_log_access'             => ['default' => 1, 'autoload' => 'no'],
 		'patchstack_block_fake_bots'                    => ['default' => 1, 'autoload' => 'no'],
 		'patchstack_index_views'                        => ['default' => 1, 'autoload' => 'no'],
-		'patchstack_proxy_comment_posting'              => ['default' => 1, 'autoload' => 'no'],
+		'patchstack_proxy_comment_posting'              => ['default' => 0, 'autoload' => 'no'],
 		'patchstack_image_hotlinking'                   => ['default' => 0, 'autoload' => 'no'],
 		'patchstack_prevent_default_file_access'        => ['default' => 1, 'autoload' => 'no'],
 		'patchstack_basicscanblock'                     => ['default' => 1, 'autoload' => 'no'],
@@ -81,6 +82,7 @@ class P_Admin_Options extends P_Core {
 		'patchstack_firewall_custom_rules_loc'          => ['default' => 'bottom', 'autoload' => 'no'],
 		'patchstack_add_security_headers'               => ['default' => 1, 'autoload' => 'yes'],
 		'patchstack_ip_block_list'                      => ['default' => '', 'autoload' => 'yes'],
+		'patchstack_log_redaction'                      => ['default' => 0, 'autoload' => 'yes'],
 
 		// Login and firewall brute force options.
 		'patchstack_block_bruteforce_ips'               => ['default' => 0, 'autoload' => 'no'],
@@ -118,9 +120,6 @@ class P_Admin_Options extends P_Core {
 		'patchstack_activation_secret'					=> ['default' => '', 'autoload' => 'no'],
 		'patchstack_activation_time'					=> ['default' => '', 'autoload' => 'no'],
 		'patchstack_firewall_ap_enabled'				=> ['default' => 0, 'autoload' => 'yes'],
-		'patchstack_firewall_log_processing'			=> ['default' => 0, 'autoload' => 'no'],
-		'patchstack_eventlog_processing'				=> ['default' => 0, 'autoload' => 'no'],
-		'patchstack_firewall_log_ap_processing'			=> ['default' => 0, 'autoload' => 'no'],
 
 		// Admin page rename options.
 		'patchstack_mv_wp_login'                        => ['default' => 0, 'autoload' => 'yes'],

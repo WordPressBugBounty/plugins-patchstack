@@ -13,26 +13,41 @@ function patchstack_get_active_domain( $options )
         return $options[0];
     }
 
-    // Give priority to home_url, then site_url.
-    foreach ( [ 'home_url', 'site_url'] as $base ) {
-        // Attempt to match against substring match.
-        foreach ( $options as $option ) {
-            // Only needed if the site is under a different folder path.
-            if ( ! isset( $option[$base] ) || strpos( $option[$base], '/' ) === false ) {
-                continue;
-            }
+    $host = strtolower(rtrim(preg_replace('/:(?:80|443)$/D', '', $_SERVER['HTTP_HOST']), '.'));
+    $target = explode('?', $_SERVER['REQUEST_URI'], 2);
+    // WordPress looks a site's path up case-insensitively, so /SHOP/ and /shop/ are the same site.
+    // It also strips backslashes and skips empty and "0" segments before the lookup.
+    $segments = array_filter( explode( '/', strtolower( stripslashes( $target[0] ) ) ) );
+    $path = '/' . implode( '/', $segments ) . ( $segments && substr( $target[0], -1 ) === '/' ? '/' : '' );
 
-            // Make sure there's a substring match.
-            if ( substr( $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], 0, strlen( $option[$base] ) ) == $option[$base] ) {
-                return $option;
+    // WordPress also serves a site's bare domain under its www. alias. An exact host wins.
+    $hosts = [ $host ];
+    if ( strpos( $host, 'www.' ) === 0 ) {
+        $hosts[] = substr( $host, 4 );
+    }
+
+    // Prefer the most specific matching home or core path. Home wins a tie.
+    foreach ( $hosts as $candidate ) {
+        $selected = null;
+        $length = -1;
+        foreach ( [ 'home_url', 'site_url'] as $base ) {
+            foreach ( $options as $option ) {
+                if ( ! isset( $option[$base] ) || ! is_string( $option[$base] ) ) {
+                    continue;
+                }
+                $parts = explode('/', $option[$base], 2);
+                if ( strtolower(rtrim(preg_replace('/:(?:80|443)$/D', '', $parts[0]), '.')) !== $candidate ) {
+                    continue;
+                }
+                $site_path = isset($parts[1]) ? strtolower(rtrim('/' . $parts[1], '/')) : '';
+                if ( ($path === $site_path || strpos($path, $site_path . '/') === 0) && strlen($site_path) > $length ) {
+                    $selected = $option;
+                    $length = strlen($site_path);
+                }
             }
         }
-
-        // Attempt to match against just the hostname.
-        foreach ( $options as $option ) {
-            if ( isset( $option[$base] ) && strpos( $option[$base], '/' ) === false && $_SERVER['HTTP_HOST'] == $option[$base]) {
-                return $option;
-            }
+        if ($selected !== null) {
+            return $selected;
         }
     }
 

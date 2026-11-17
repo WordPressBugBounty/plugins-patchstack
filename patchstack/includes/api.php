@@ -96,10 +96,14 @@ class P_Api extends P_Core {
 			$client_secret = $this->decrypt( $client_secret, $client_nonce );
 		}
 
+		// The messages in this method are deliberately untranslated. It runs during plugins_loaded
+		// (license checks, dynamic rule fetches), and translating the patchstack domain before init
+		// triggers a _load_textdomain_just_in_time notice on WP 6.7+. They are API error payloads.
+
 		// Make sure these values are set.
 		if ( empty( $client_id ) || empty( $client_secret ) ) {
 			$response_data->result  = 'failed';
-			$response_data->message = esc_attr__( 'API keys missing! Unable to obtain an access token.', 'patchstack' );
+			$response_data->message = 'API keys missing! Unable to obtain an access token.';
 			return $response_data;
 		}
 
@@ -134,7 +138,7 @@ class P_Api extends P_Core {
 			}
 
 			$response_data->result  = 'failed';
-			$response_data->message = esc_attr__( 'Unexpected error! Unable to obtain an access token. Error code: ', 'patchstack' ) . wp_remote_retrieve_response_code( $response );
+			$response_data->message = 'Unexpected error! Unable to obtain an access token. Error code: ' . wp_remote_retrieve_response_code( $response );
 			$response_data->body = $this->message;
 			return $response_data;
 		}
@@ -160,7 +164,7 @@ class P_Api extends P_Core {
 			return $response_data;
 		} elseif ( isset( $result->error ) ) {
 			$response_data->result  = $result->error;
-			$response_data->message = esc_attr__( 'Unexpected error! Unable to obtain an access token.', 'patchstack' ) . $result->message;
+			$response_data->message = 'Unexpected error! Unable to obtain an access token.' . $result->message;
 			return $response_data;
 		}
 	}
